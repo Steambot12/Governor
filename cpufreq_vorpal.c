@@ -41,7 +41,7 @@
 #define CPUFREQ_VORPAL_UP_RATE_LIMIT_US             0
 
 /* BIG: 8ms down - balance between gaming stability and battery */
-#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    8000
+#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    12000
 
 /* LITTLE: AGGRESSIVE IDLE - Fix stuck issue */
 #define CPUFREQ_VORPAL_LITTLE_UP_RATE_LIMIT_US      0
@@ -54,7 +54,7 @@
 
 /* PRIME: Faster down after gaming for thermal */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   5000
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   8000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
@@ -88,16 +88,16 @@
 #define RFX_SUSTAIN_HEAVY_EXIT_PCT     5
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS        20
+#define RFX_SUSTAIN_EXIT_TICKS        32
 
 /* SHORTER GAMING LOCK - Save battery */
-#define RFX_GAMING_LOCK_DURATION_NS   (6000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (8000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (5500 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              95
-#define RFX_BIG_GAMING_MAX_PCT          93
-#define RFX_PRIME_GAMING_FLOOR_PCT      87
+#define RFX_BIG_GAMING_MAX_PCT          95
+#define RFX_PRIME_GAMING_FLOOR_PCT      92
 #define RFX_GAME_LAUNCH_FLOOR_PCT       55
 #define RFX_BENCHMARK_MAX_PCT          100
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   20
@@ -408,11 +408,11 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     	rfx_pol->in_benchmark_sustain = false;
     	rfx_pol->sustain_exit_ticks   = 0;
 		if (rfx_pol->gaming_lock_end_ns &&
-	    (s64)(rfx_pol->gaming_lock_end_ns - time) < (1500 * NSEC_PER_MSEC) &&
-	    util_pct >= 6) {
+	    (s64)(rfx_pol->gaming_lock_end_ns - time) < (2000 * NSEC_PER_MSEC) &&
+	    util_pct >= 10) {
 		rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
 	}
-    	if (util_pct >= 10) {
+    	if (util_pct >= 6) {
         	rfx_pol->in_heavy_mode      = true;
         	rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
     	} else if (rfx_pol->gaming_lock_end_ns &&
