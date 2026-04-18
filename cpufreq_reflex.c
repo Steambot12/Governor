@@ -109,10 +109,10 @@
 
 /* HARDER TO ENTER GAMING MODE (reduce false positives) */
 #define RFX_SUSTAIN_HEAVY_ENTER_PCT   25   /* was: 40 - lebih mudah masuk heavy = smoother */
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    16   /* was: 22 - exit lebih ketat = tidak flicker keluar */
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT    12   /* was: 22 - exit lebih ketat = tidak flicker keluar */
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8   /* UNCHANGED */
 #define RFX_SUSTAIN_HEAVY_TICKS        1   /* UNCHANGED */
-#define RFX_SUSTAIN_EXIT_TICKS        12   /* was: 4  - butuh 12 tick rendah sebelum exit = stabil */
+#define RFX_SUSTAIN_EXIT_TICKS         7   /* was: 4  - butuh 7 tick rendah sebelum exit = stabil */
 
 /* SHORTER GAMING LOCK - Save battery */
 #define RFX_GAMING_LOCK_DURATION_NS   (2500 * NSEC_PER_MSEC)   // cover BORE burst cycle + scene load
@@ -456,7 +456,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     	rfx_pol->sustain_exit_ticks   = 0;
 		if (rfx_pol->gaming_lock_end_ns &&
 	    (s64)(rfx_pol->gaming_lock_end_ns - time) < (300 * NSEC_PER_MSEC) &&
-	    util_pct >= 15) {
+	    util_pct >= 8) {
 		rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
 	}
 
@@ -947,11 +947,11 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 		    (time - rfx_pol->thermal_last_check_ns) > (500 * NSEC_PER_MSEC)) {
 			rfx_pol->thermal_last_check_ns = time;
 			if (rfx_pol->in_heavy_mode &&
-			    rfx_pol->thermal_gaming_cap_pct > 85)
+			    rfx_pol->thermal_gaming_cap_pct > 88)
 				rfx_pol->thermal_gaming_cap_pct--;
 			else if (!rfx_pol->in_heavy_mode &&
 				 rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
-				rfx_pol->thermal_gaming_cap_pct++;
+				rfx_pol->thermal_gaming_cap_pct += 2;
 		}
 		if (is_prime) {
 			if (freq > rfx_adaptive_max(policy, rfx_pol->thermal_gaming_cap_pct))
