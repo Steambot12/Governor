@@ -615,23 +615,21 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 	}
 
 	/* Stale check untuk LITTLE - v7.8: UI animation aware */
-	if (rfx_c->last_update) {
+	if (rfx_c->last_update && !rfx_pol->force_idle) {
     	stale_delta = (s64)(time - rfx_c->last_update);
     	if (stale_delta >= (s64)RFX_IDLE_STALE_NS) {
-        	/* [FIX-UI-1] Cek dulu: ada interactive window? Jangan force idle */
         	if (rfx_pol->interactive_end_ns && time < rfx_pol->interactive_end_ns) {
-            /* Ada UI activity - jangan drop ke min, pakai UI floor */
-            *freq_cap_khz = RFX_LITTLE_INTERACTIVE_FLOOR_KHZ;
-            return false;   // tidak force down
-        }
+            	*freq_cap_khz = RFX_LITTLE_INTERACTIVE_FLOOR_KHZ;
+            	return false;
+        	}
         	rfx_c->act_state            = RFX_ACT_IDLE;
         	rfx_c->act_up_ticks         = 0;
         	rfx_c->act_down_ticks       = 0;
         	rfx_c->filtered_busy_pct    = 0;
         	rfx_c->hispeed_start_ns     = 0;
         	rfx_c->hispeed_idle_windows = 0;
-        	rfx_pol->force_idle = true;
-        	rfx_pol->in_deep_idle = true;
+        	rfx_pol->force_idle         = true;
+        	rfx_pol->in_deep_idle       = true;
         	rfx_pol->idle_entry_time_ns = time;
         	*freq_cap_khz = rfx_pol->policy->cpuinfo.min_freq;
         	return true;
@@ -946,13 +944,16 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 		if (!rfx_pol->thermal_last_check_ns ||
 		    (time - rfx_pol->thermal_last_check_ns) > (500 * NSEC_PER_MSEC)) {
 			rfx_pol->thermal_last_check_ns = time;
-			if (rfx_pol->in_heavy_mode &&
-			    rfx_pol->thermal_gaming_cap_pct > 88)
-				rfx_pol->thermal_gaming_cap_pct--;
-			else if (!rfx_pol->in_heavy_mode &&
-				 rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
-				rfx_pol->thermal_gaming_cap_pct += 2;
+		if (rfx_pol->in_heavy_mode &&
+    		rfx_pol->thermal_gaming_cap_pct > 88) {
+    		u64 lock_age = time - rfx_pol->mode_switch_time_ns;
+    		if (lock_age > (10000 * NSEC_PER_MSEC))
+        		rfx_pol->thermal_gaming_cap_pct--;
+		} else if (!rfx_pol->in_heavy_mode &&
+           			rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
+    		rfx_pol->thermal_gaming_cap_pct++;
 		}
+	}
 		if (is_prime) {
 			if (freq > rfx_adaptive_max(policy, rfx_pol->thermal_gaming_cap_pct))
 				freq = rfx_adaptive_max(policy, rfx_pol->thermal_gaming_cap_pct);
@@ -1335,13 +1336,14 @@ static void rfx_iowait_boost(struct rfx_cpu *rfx_c, u64 time,
 	unsigned int iowait_cap;
 
 	if (rfx_c->iowait_boost) {
-		rfx_iowait_reset(rfx_c, time, set_iowait_boost);
-		return;
+    	if (!rfx_iowait_reset(rfx_c, time, set_iowait_boost))
+        	rfx_c->iowait_boost_pending = set_iowait_boost;
+    	return;
 	}
 	if (!set_iowait_boost)
-		return;
+    	return;
 	if (rfx_c->iowait_boost_pending)
-		return;
+    	return;
 
 	rfx_c->iowait_boost_pending = true;
 
@@ -1485,6 +1487,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned int         gf;
 	unsigned int         idle_cap;
 	unsigned int         hispeed_pct;
+	unsigned int         hist_snap;
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 
@@ -1506,17 +1509,17 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
 					hispeed_pct);
-
+	hist_snap = rfx_c->util_history_idx;
 	{
 		bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
 		rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util, max_cap, is_big_cluster, time);
 	}
 
 	if (rfx_pol->tunables->gaming_mode) {
-		unsigned int h  = rfx_c->util_history_idx;
-		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
-		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
-		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
+		unsigned int h  = rfx_c->util_history_idx;          /* next write slot */
+		unsigned int h1 = rfx_c->util_history[(h - 1) & 7]; /* newest */
+		unsigned int h2 = rfx_c->util_history[(h - 2) & 7]; /* -1 cycle */
+		unsigned int h3 = rfx_c->util_history[(h - 3) & 7]; /* -2 cycle */
 		if (h1 > h2 && h2 > h3 && h1 > 15) {
 			rfx_pol->in_heavy_mode      = true;
 			rfx_pol->gaming_lock_end_ns = time + (300 * NSEC_PER_MSEC);
@@ -1976,15 +1979,21 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 	t->gaming_mode = val;
 
 	if (!val) {
-		list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
-			rfx_pol->gaming_lock_end_ns = 0;
-			rfx_pol->current_mode = RFX_MODE_NORMAL;
-			rfx_pol->in_heavy_mode = false;
-			rfx_pol->in_light_mode = false;
-			rfx_pol->force_idle = false;
-			rfx_pol->need_freq_update = true;
-			rfx_pol->mode_switch_time_ns = ktime_get_ns();
-		}
+    	list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
+        	rfx_pol->gaming_lock_end_ns      = 0;
+        	rfx_pol->current_mode            = RFX_MODE_NORMAL;
+        	rfx_pol->in_heavy_mode           = false;
+        	rfx_pol->in_light_mode           = false;
+        	rfx_pol->force_idle              = false;
+        	rfx_pol->need_freq_update        = true;
+        	rfx_pol->mode_switch_time_ns     = ktime_get_ns();
+        	rfx_pol->game_launching          = false;
+        	rfx_pol->game_launch_end_ns      = 0;
+        	rfx_pol->prime_gaming_floor_active = false;
+        	rfx_pol->prime_gaming_floor_end_ns = 0;
+        	rfx_pol->thermal_gaming_cap_pct  = 0;
+        	rfx_pol->thermal_last_check_ns   = 0;
+    	}
 	}
 	return count;
 }
@@ -2499,7 +2508,7 @@ static int __init reflex_gov_init(void)
 {
 	pr_info("%s %s by %s\n", CPUFREQ_REFLEX_PROGNAME,
 		CPUFREQ_REFLEX_VERSION, CPUFREQ_REFLEX_AUTHOR);
-	pr_info("Reflex v7.2 THERMAL: Gaming<44C | Benchmark SC1700+/MC4500+ | Idle<1%% | ThermalOverride\n");
+	pr_info("Gaming<44C | Benchmark SC1700+/MC4500+ | Idle<1%% | ThermalOverride | BORE-UNIVERSAL\n");
 	return cpufreq_register_governor(&reflex_gov);
 }
 
