@@ -100,8 +100,8 @@
  * === BURST GUARD - GAMING OPTIMIZED ========================================
  * =========================================================================== */
 
-#define RFX_BURST_GUARD_NS    (220 * NSEC_PER_MSEC)  /* was: 150ms - lebih singkat → idle lebih cepat */
-#define RFX_BURST_DROP_THRESHOLD                  15   /* was: 15   - butuh drop lebih besar sebelum guard */
+#define RFX_BURST_GUARD_NS    (320 * NSEC_PER_MSEC)  /* was: 220ms - lebih singkat → idle lebih cepat */
+#define RFX_BURST_DROP_THRESHOLD                  12   /* was: 15   - butuh drop lebih besar sebelum guard */
 
 /* ===========================================================================
  * === HEAVY SUSTAIN - THERMAL GAMING ========================================
@@ -109,19 +109,19 @@
 
 /* HARDER TO ENTER GAMING MODE (reduce false positives) */
 #define RFX_SUSTAIN_HEAVY_ENTER_PCT   25   /* was: 40 - lebih mudah masuk heavy = smoother */
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    12   /* was: 22 - exit lebih ketat = tidak flicker keluar */
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT     8   /* was: 22 - exit lebih ketat = tidak flicker keluar */
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8   /* UNCHANGED */
 #define RFX_SUSTAIN_HEAVY_TICKS        1   /* UNCHANGED */
-#define RFX_SUSTAIN_EXIT_TICKS         7   /* was: 4  - butuh 7 tick rendah sebelum exit = stabil */
+#define RFX_SUSTAIN_EXIT_TICKS        12   /* was: 4  - butuh 12 tick rendah sebelum exit = stabil */
 
 /* SHORTER GAMING LOCK - Save battery */
-#define RFX_GAMING_LOCK_DURATION_NS   (2500 * NSEC_PER_MSEC)   // cover BORE burst cycle + scene load
+#define RFX_GAMING_LOCK_DURATION_NS   (3500 * NSEC_PER_MSEC)   // cover BORE burst cycle + scene load
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (3000 * NSEC_PER_MSEC) /* 3s window per heavy cycle */
 
 /* Adaptive Gaming — persentase dari max freq hardware */
 #define RFX_GAMING_MAX_PCT          92   /* 92% dari max freq = ada sedikit thermal headroom */
 #define RFX_BIG_GAMING_MAX_PCT      91   /* 91% dari max BIG */
-#define RFX_PRIME_GAMING_FLOOR_PCT  77   /* floor 77% dari max PRIME */
+#define RFX_PRIME_GAMING_FLOOR_PCT  82   /* floor 82% dari max PRIME */
 #define RFX_GAME_LAUNCH_FLOOR_PCT   55   /* 55% dari max PRIME saat launch */
 #define RFX_BENCHMARK_MAX_PCT      100   /* benchmark = full max freq */
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT  20  /* 20% dari max BIG */
@@ -461,7 +461,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 	}
 
     /* [v8.0-FIX] Gate 20% — naik dari 15%, lebih safe untuk scene burst */
-    	if (util_pct >= 20) {
+    	if (util_pct >= 10) {
         	rfx_pol->in_heavy_mode      = true;
         	rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
     	} else if (rfx_pol->gaming_lock_end_ns &&
@@ -784,9 +784,9 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 	/* Gaming mode - Balanced headroom */
     if (mode == RFX_MODE_GAMING) {
     	if (is_prime)
-        	headroom_pct = is_heavy ? 36 : 28;
+        	headroom_pct = is_heavy ? 42 : 32;
     	else
-        	headroom_pct = is_heavy ? 30 : 22;
+        	headroom_pct = is_heavy ? 34 : 24;
     	return min(util + util * headroom_pct / 100, max_cap);
 	}
 
@@ -1659,7 +1659,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	/* [NEW-E] LITTLE suppress saat gaming */
 	if (max_cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD &&
 	    rfx_pol->in_heavy_mode) {
-		unsigned int little_cap = rfx_adaptive_max(rfx_pol->policy, 65);
+		unsigned int little_cap = rfx_adaptive_max(rfx_pol->policy, 75);
 		if (next_f > little_cap)
 			next_f = little_cap;
 	}
