@@ -73,25 +73,25 @@
 #define IOWAIT_BOOST_MIN    (SCHED_CAPACITY_SCALE / 8)
 
 /* Half-life: Fast decay for battery */
-#define HISPEED_HALFLIFE_NS    (4 * NSEC_PER_MSEC)
-#define HISPEED_HALFLIFE_MAX                       6
+#define HISPEED_HALFLIFE_NS    (6 * NSEC_PER_MSEC)
+#define HISPEED_HALFLIFE_MAX                       8
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (450 * NSEC_PER_MSEC)
+#define RFX_BURST_GUARD_NS    (250 * NSEC_PER_MSEC)
 #define RFX_BURST_DROP_THRESHOLD                  12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
 /* HARDER TO ENTER GAMING MODE (reduce false positives) */
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   25
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   18
 #define RFX_SUSTAIN_HEAVY_EXIT_PCT     5
-#define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
+#define RFX_SUSTAIN_HEAVY_BUSY_PCT     5
 #define RFX_SUSTAIN_HEAVY_TICKS        1
 #define RFX_SUSTAIN_EXIT_TICKS        32
 
 /* SHORTER GAMING LOCK - Save battery */
-#define RFX_GAMING_LOCK_DURATION_NS   (8000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (12000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (5500 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
@@ -118,7 +118,7 @@
 /* === FREQUENCY FLOORS & CAPS - IDLE FIX === */
 
 /* LITTLE max cap non-gaming: 1.0GHz (save battery) */
-#define RFX_LITTLE_MAX_NON_GAMING_KHZ  883200
+#define RFX_LITTLE_MAX_NON_GAMING_KHZ  1190400
 #define RFX_FG_LIGHT_BIG_CAP_KHZ      600000
 #define RFX_INTERACTIVE_UTIL_PCT      1
 
@@ -368,7 +368,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			int diff = (int)rfx_c->util_history[i] - avg;
 			variance += diff < 0 ? -diff : diff;
 		}
-		if (variance < 40 && avg >= 12 && avg <= 70)
+		if (variance < 20 && avg >= 15 && avg <= 55)
 			periodic_pattern = true;
 	}
 
@@ -408,8 +408,8 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     	rfx_pol->in_benchmark_sustain = false;
     	rfx_pol->sustain_exit_ticks   = 0;
 		if (rfx_pol->gaming_lock_end_ns &&
-	    (s64)(rfx_pol->gaming_lock_end_ns - time) < (2000 * NSEC_PER_MSEC) &&
-	    util_pct >= 10) {
+	    (s64)(rfx_pol->gaming_lock_end_ns - time) < (4000 * NSEC_PER_MSEC) &&
+	    util_pct >= 5) {
 		rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
 	}
     	if (util_pct >= 6) {
@@ -728,7 +728,7 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 	/* Gaming mode - Balanced headroom */
     if (mode == RFX_MODE_GAMING) {
     	if (is_prime)
-        	headroom_pct = is_heavy ? 52 : 40;
+        	headroom_pct = is_heavy ? 62 : 48;
     	else
         	headroom_pct = is_heavy ? 42 : 30;
     	return min(util + util * headroom_pct / 100, max_cap);
@@ -1013,9 +1013,7 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 			if (is_big) {
 			/* HARDER TO ENTER: 25% threshold */
 			heavy_cond = (util_pct >= RFX_SUSTAIN_HEAVY_ENTER_PCT)
-				&& (rfx_c->filtered_busy_pct >= RFX_SUSTAIN_HEAVY_BUSY_PCT
-					|| rfx_c->busy_pct >= 20)
-				&& (rfx_c->act_state == RFX_ACT_HEAVY || util_pct > 45);
+          				&& (rfx_c->filtered_busy_pct >= RFX_SUSTAIN_HEAVY_BUSY_PCT || rfx_c->busy_pct >= 15);
 
 			if (!rfx_pol->in_heavy_mode) {
 				if (heavy_cond) {
