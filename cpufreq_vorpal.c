@@ -95,9 +95,9 @@
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              95
-#define RFX_BIG_GAMING_MAX_PCT          96
-#define RFX_PRIME_GAMING_FLOOR_PCT      85
+#define RFX_GAMING_MAX_PCT              90
+#define RFX_BIG_GAMING_MAX_PCT          92
+#define RFX_PRIME_GAMING_FLOOR_PCT      78
 #define RFX_GAME_LAUNCH_FLOOR_PCT       55
 #define RFX_BENCHMARK_MAX_PCT          100
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   20
@@ -729,9 +729,9 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 	/* Gaming mode - Balanced headroom */
     if (mode == RFX_MODE_GAMING) {
     	if (is_prime)
-        	headroom_pct = is_heavy ? 55 : 44;
+        	headroom_pct = is_heavy ? 45 : 36;
     	else
-        	headroom_pct = is_heavy ? 55 : 42;
+        	headroom_pct = is_heavy ? 48 : 36;
     	return min(util + util * headroom_pct / 100, max_cap);
 	}
 
@@ -895,14 +895,16 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 		if (!rfx_pol->thermal_gaming_cap_pct)
 			rfx_pol->thermal_gaming_cap_pct = RFX_GAMING_MAX_PCT;
 		if (!rfx_pol->thermal_last_check_ns ||
-    		(time - rfx_pol->thermal_last_check_ns) > (2000 * NSEC_PER_MSEC)) {
+    		(time - rfx_pol->thermal_last_check_ns) > (1000 * NSEC_PER_MSEC)) {
     		rfx_pol->thermal_last_check_ns = time;
 
     	if (rfx_pol->in_heavy_mode &&
         	rfx_pol->thermal_gaming_cap_pct > 88) {
         	u64 lock_age = time - rfx_pol->mode_switch_time_ns;
-        if (lock_age > (30000 * NSEC_PER_MSEC))
+        if (lock_age > (15000 * NSEC_PER_MSEC))
             rfx_pol->thermal_gaming_cap_pct--;
+		if (lock_age > (45000 * NSEC_PER_MSEC) && rfx_pol->thermal_gaming_cap_pct > 85)
+        	rfx_pol->thermal_gaming_cap_pct -= 2;
     	} else if (!rfx_pol->in_heavy_mode &&
                rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
         		rfx_pol->thermal_gaming_cap_pct++;
@@ -1917,8 +1919,6 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
         	rfx_pol->game_launch_end_ns      = 0;
         	rfx_pol->prime_gaming_floor_active = false;
         	rfx_pol->prime_gaming_floor_end_ns = 0;
-        	rfx_pol->thermal_gaming_cap_pct  = 0;
-        	rfx_pol->thermal_last_check_ns   = 0;
     	}
 	}
 	return count;
