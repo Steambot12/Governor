@@ -132,7 +132,7 @@
 /* THERMAL OVERRIDE - Governor-side frequency cap for <44C */
 #define RFX_THERMAL_ENABLE               1
 #define RFX_THERMAL_SUSTAIN_EXIT_PCT    20
-#define RFX_THERMAL_GAMING_CAP_MIN_PCT  82
+#define RFX_THERMAL_GAMING_CAP_MIN_PCT  74
 #define RFX_THERMAL_PRESSURE_TRIGGER_PCT  8
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 75
 
@@ -431,6 +431,14 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     	} else {
         	rfx_pol->in_heavy_mode = false;
     	}
+
+		if (rfx_pol->current_mode == RFX_MODE_NORMAL && 
+    		rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
+    		if ((time - rfx_pol->thermal_last_check_ns) > (5000 * NSEC_PER_MSEC)) {
+        		rfx_pol->thermal_gaming_cap_pct++;
+        		rfx_pol->thermal_last_check_ns = time;
+    		}
+		}	
 
     	if (rfx_pol->policy) {
         	unsigned long cap = arch_scale_cpu_capacity(
@@ -827,7 +835,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
         return true;
     }
 
-    going_up = (rfx_pol->next_freq <= rfx_pol->policy->cur);
+    going_up = (rfx_pol->next_freq > rfx_pol->policy->cur);
 
     /* Mode-aware rate limiting */
     if (rfx_pol->force_idle) {
@@ -1005,6 +1013,7 @@ if (rfx_pol->current_mode == RFX_MODE_GAMING &&
                 freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
 		}
 	}
+}
 
 	if (rfx_pol->in_heavy_mode &&
 	    !rfx_pol->in_benchmark_sustain &&
