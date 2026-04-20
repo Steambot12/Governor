@@ -918,7 +918,8 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	bool is_little = (max <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD);
 	bool is_prime  = (max >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 	unsigned int hispeed_pct;
-	unsigned int effective_cap_pct;
+	unsigned int effective_cap_pct = rfx_pol->thermal_gaming_cap_pct
+    ? rfx_pol->thermal_gaming_cap_pct : RFX_GAMING_MAX_PCT;
 
 	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	util        = rfx_apply_headroom(util, max, is_heavy, rfx_pol->current_mode);
