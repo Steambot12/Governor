@@ -96,8 +96,8 @@
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              88
-#define RFX_BIG_GAMING_MAX_PCT          90
+#define RFX_GAMING_MAX_PCT              85
+#define RFX_BIG_GAMING_MAX_PCT          87
 #define RFX_PRIME_GAMING_FLOOR_PCT      75
 #define RFX_GAME_LAUNCH_FLOOR_PCT       55
 #define RFX_BENCHMARK_MAX_PCT          100
@@ -132,9 +132,9 @@
 /* THERMAL OVERRIDE - Governor-side frequency cap for <44C */
 #define RFX_THERMAL_ENABLE               1
 #define RFX_THERMAL_SUSTAIN_EXIT_PCT    20
-#define RFX_THERMAL_GAMING_CAP_MIN_PCT  74
+#define RFX_THERMAL_GAMING_CAP_MIN_PCT  76
 #define RFX_THERMAL_PRESSURE_TRIGGER_PCT  8
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 75
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 68
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (2000 * NSEC_PER_MSEC)
@@ -737,11 +737,11 @@ static void rfx_update_thermal_pressure(struct rfx_policy *rfx_pol, u64 time)
     if (pressure_pct >= RFX_THERMAL_PRESSURE_TRIGGER_PCT) {
         rfx_pol->thermal_sustain_active = true;
         if (pressure_pct > 25)
-            rfx_pol->thermal_sustain_cap_pct = 80;
+            rfx_pol->thermal_sustain_cap_pct = 76;
         else if (pressure_pct > 15)
-            rfx_pol->thermal_sustain_cap_pct = 84;
+            rfx_pol->thermal_sustain_cap_pct = 80;
         else
-            rfx_pol->thermal_sustain_cap_pct = 87;
+            rfx_pol->thermal_sustain_cap_pct = 84;
     } else {
         rfx_pol->thermal_sustain_active  = false;
         rfx_pol->thermal_sustain_cap_pct = RFX_GAMING_MAX_PCT;
@@ -983,9 +983,9 @@ if (rfx_pol->current_mode == RFX_MODE_GAMING &&
                 time >= rfx_pol->gaming_lock_end_ns) {
                 u64 light_since = rfx_pol->gaming_lock_end_ns ?
                     time - rfx_pol->gaming_lock_end_ns : 0;
-                if (light_since > (8000 * NSEC_PER_MSEC) &&
-                    rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
-                    rfx_pol->thermal_gaming_cap_pct++;
+            	if (light_since > (20000 * NSEC_PER_MSEC) &&
+    				rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
+    				rfx_pol->thermal_gaming_cap_pct++;
             }
         }
         effective_cap_pct = rfx_pol->thermal_gaming_cap_pct;
