@@ -703,7 +703,12 @@ static unsigned int rfx_get_adaptive_shift(unsigned long util,
 					   unsigned long max_cap,
 					   unsigned int base_shift)
 {
-	unsigned int util_pct = (unsigned int)(util * 100 / max_cap);
+	unsigned int util_pct;
+
+	if (!max_cap)
+		return base_shift > 0 ? min(base_shift + 3, 12U) : 0;
+
+	util_pct = (unsigned int)(util * 100 / max_cap);
 
 	if (util_pct > 90)
 		return 0;
@@ -758,6 +763,8 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 	bool is_prime;
 	unsigned int headroom_pct;
 
+	if (!max_cap)
+    return util;
 	result   = min(util, max_cap);
 	util_pct = (unsigned int)(util * 100 / max_cap);
 
@@ -1004,7 +1011,7 @@ if (rfx_pol->current_mode == RFX_MODE_GAMING &&
             	freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
     	}
 	}
-}
+
 
 	if (rfx_pol->in_heavy_mode &&
 	    !rfx_pol->in_benchmark_sustain &&
@@ -1089,11 +1096,8 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 {
 	unsigned int util_pct;
 	bool heavy_cond, light_cond;
-	bool is_prime = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
-	bool is_prime_cluster = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
-	unsigned int enter_pct = is_prime_cluster ? 8 : RFX_SUSTAIN_HEAVY_ENTER_PCT;
-	heavy_cond = (util_pct >= enter_pct) && (...);
 	bool interactive_cond;
+	bool is_prime = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 	s64 idle_time;
 
 	util_pct = (max_cap > 0)
@@ -2286,7 +2290,6 @@ static int rfx_init(struct cpufreq_policy *policy)
 	tunables->hispeed_filter_shift = CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT;
 	tunables->hispeed_boost_pct    = CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
 	tunables->gaming_mode          = 0;
-	tunables->video_mode           = 0;
 	tunables->battery_saver        = 0;
 	tunables->benchmark_mode       = 0;
 
