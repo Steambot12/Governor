@@ -483,7 +483,8 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			if (time_in_mode > 40 * NSEC_PER_MSEC) {
 				rfx_pol->current_mode = RFX_MODE_NORMAL;
 				rfx_pol->mode_switch_time_ns = time;
-				rfx_pol->gaming_lock_end_ns = 0;
+				if (!rfx_pol->in_heavy_mode)
+					rfx_pol->gaming_lock_end_ns = 0;
 				rfx_pol->in_benchmark_sustain = false;
 			}
 		}
@@ -524,25 +525,25 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 	bool is_little = (max_cap <= RFX_LITTLE_CAP_THRESHOLD);
 
 	/* Enhanced idle detection */
-	if (rfx_c->last_update) {
-		time_since_last_update = (s64)(time - rfx_c->last_update);
-		if (time_since_last_update >= (s64)RFX_IDLE_STALE_NS) {
-			rfx_pol->force_idle = true;
-			rfx_pol->force_idle_start_ns = time;
-			rfx_pol->last_real_update_ns = time;
-			if (!rfx_pol->in_deep_idle) {
-				rfx_pol->idle_entry_time_ns = time;
-				rfx_pol->in_deep_idle = true;
-			}
-		} else if (rfx_pol->force_idle) {
-			if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
-				rfx_pol->force_idle = false;
-				rfx_pol->in_deep_idle = false;
-			} else if (time - rfx_pol->force_idle_start_ns > (8 * NSEC_PER_MSEC)) {
-				rfx_pol->force_idle_start_ns = time;
-			}
-		}
-	}
+if (rfx_c->last_update && is_little) {  /* BARU: is_little guard */
+    time_since_last_update = (s64)(time - rfx_c->last_update);
+    if (time_since_last_update >= (s64)RFX_IDLE_STALE_NS) {
+        rfx_pol->force_idle = true;
+        rfx_pol->force_idle_start_ns = time;
+        rfx_pol->last_real_update_ns = time;
+        if (!rfx_pol->in_deep_idle) {
+            rfx_pol->idle_entry_time_ns = time;
+            rfx_pol->in_deep_idle = true;
+        }
+    } else if (rfx_pol->force_idle) {
+        if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
+            rfx_pol->force_idle = false;
+            rfx_pol->in_deep_idle = false;
+        } else if (time - rfx_pol->force_idle_start_ns > (8 * NSEC_PER_MSEC)) {
+            rfx_pol->force_idle_start_ns = time;
+        }
+    }
+}
 
 	/* Gaming/benchmark mode: bypass throttling */
 	if (rfx_pol->in_heavy_mode || rfx_pol->in_benchmark_sustain ||
@@ -767,7 +768,7 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 	unsigned int headroom_pct;
 
 	if (!max_cap)
-    return util;
+    return 0;
 	result   = min(util, max_cap);
 	util_pct = (unsigned int)(util * 100 / max_cap);
 
@@ -880,9 +881,8 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
 		if (rfx_pol->next_freq == next_freq &&
 		    !rfx_driver_test_flags(CPUFREQ_NEED_UPDATE_LIMITS))
 			return false;
-	} else if (rfx_pol->next_freq == next_freq &&
-		   rfx_pol->last_upfreq_time == time) {
-		return false;
+	} else if (rfx_pol->next_freq == next_freq) {
+    		return false;
 	}
 
 	if (next_freq < rfx_pol->next_freq) {
@@ -927,8 +927,12 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	bool is_little = (max <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD);
 	bool is_prime  = (max >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 	unsigned int hispeed_pct;
-	unsigned int effective_cap_pct = rfx_pol->thermal_gaming_cap_pct
-    ? rfx_pol->thermal_gaming_cap_pct : RFX_GAMING_MAX_PCT;
+	unsigned int effective_cap_pct;
+	{
+    	unsigned int cap = READ_ONCE(rfx_pol->thermal_gaming_cap_pct);
+    	effective_cap_pct = (cap >= RFX_THERMAL_GAMING_CAP_MIN_PCT && cap <= 100)
+         	               ? cap : RFX_GAMING_MAX_PCT;
+	}
 
 	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	util        = rfx_apply_headroom(util, max, is_heavy, rfx_pol->current_mode);
@@ -982,22 +986,21 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 				rfx_pol->thermal_last_check_ns = time;
 
 				if (rfx_pol->in_heavy_mode &&
-				    rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT) {
-					u64 lock_age = time - rfx_pol->mode_switch_time_ns;
-					if (lock_age > (20000 * NSEC_PER_MSEC) &&
-					    rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT)
-						rfx_pol->thermal_gaming_cap_pct -= 2;
-					else if (lock_age > (8000 * NSEC_PER_MSEC))
-						rfx_pol->thermal_gaming_cap_pct--;
+    				rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT) {
+    				u64 lock_age = time - rfx_pol->mode_switch_time_ns;
+
+    			if (lock_age > (30000 * NSEC_PER_MSEC) &&
+        				rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT)
+        				rfx_pol->thermal_gaming_cap_pct--;  /* Turun pelan 1% per check */
 				} else if (!rfx_pol->in_heavy_mode) {
-					if (!rfx_pol->gaming_lock_end_ns ||
-					    time >= rfx_pol->gaming_lock_end_ns) {
-						u64 light_since = rfx_pol->gaming_lock_end_ns ?
-							time - rfx_pol->gaming_lock_end_ns : 0;
-						if (light_since > (20000 * NSEC_PER_MSEC) &&
-						    rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
-							rfx_pol->thermal_gaming_cap_pct++;
-					}
+    				u64 light_since = rfx_pol->gaming_lock_end_ns ?
+        			   (time >= rfx_pol->gaming_lock_end_ns ?
+         				time - rfx_pol->gaming_lock_end_ns : 0) : 0;
+
+    				if (light_since > (5000 * NSEC_PER_MSEC) &&
+        				rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
+        				rfx_pol->thermal_gaming_cap_pct++;
+    				}
 				}
 				effective_cap_pct = rfx_pol->thermal_gaming_cap_pct;
 			}
@@ -1368,35 +1371,37 @@ static bool rfx_iowait_reset(struct rfx_cpu *rfx_c, u64 time,
 }
 
 static void rfx_iowait_boost(struct rfx_cpu *rfx_c, u64 time,
-			     unsigned int flags)
+                             unsigned int flags)
 {
-	bool set_iowait_boost = flags & SCHED_CPUFREQ_IOWAIT;
-	unsigned long max_cap;
-	unsigned int iowait_cap;
+    bool set_iowait_boost = flags & SCHED_CPUFREQ_IOWAIT;
+    unsigned long max_cap;
+    unsigned int iowait_cap;
 
-	if (rfx_c->iowait_boost) {
-    	if (!rfx_iowait_reset(rfx_c, time, set_iowait_boost))
-        	rfx_c->iowait_boost_pending = set_iowait_boost;
-    	return;
-	}
-	if (!set_iowait_boost)
-    	return;
-	if (rfx_c->iowait_boost_pending)
-    	return;
+    if (!set_iowait_boost) {
+        if (rfx_c->iowait_boost)
+            rfx_iowait_reset(rfx_c, time, false);
+        return;
+    }
 
-	rfx_c->iowait_boost_pending = true;
+    if (rfx_c->iowait_boost) {
+        if (rfx_iowait_reset(rfx_c, time, true))
+            return;
 
-	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
-	if (rfx_c->iowait_boost >= max_cap) {
-		iowait_cap = (max_cap <= RFX_LITTLE_CAP_THRESHOLD)
-			? (SCHED_CAPACITY_SCALE / 6)
-			: (SCHED_CAPACITY_SCALE * 3 / 4);
-		rfx_c->iowait_boost = min_t(unsigned int,
-					    rfx_c->iowait_boost << 1,
-					    iowait_cap);
-		return;
-	}
-	rfx_c->iowait_boost = IOWAIT_BOOST_MIN;
+        max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
+        iowait_cap = (max_cap <= RFX_LITTLE_CAP_THRESHOLD)
+            ? (SCHED_CAPACITY_SCALE / 6)
+            : (SCHED_CAPACITY_SCALE * 3 / 4);
+        rfx_c->iowait_boost = min_t(unsigned int,
+                                    rfx_c->iowait_boost << 1, iowait_cap);
+        rfx_c->iowait_boost_pending = true;
+        return;
+    }
+
+    if (rfx_c->iowait_boost_pending)
+        return;
+
+    rfx_c->iowait_boost_pending = true;
+    rfx_c->iowait_boost = IOWAIT_BOOST_MIN;
 }
 
 static unsigned long rfx_iowait_apply(struct rfx_cpu *rfx_c, u64 time,
@@ -1523,6 +1528,8 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned int         idle_cap;
 	unsigned int         hispeed_pct;
 	unsigned int         hist_snap;
+	bool                 is_prime_cpu;
+	bool                 is_big_cpu;
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 
@@ -1697,9 +1704,13 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 			next_f = little_cap;
 	}
 
+is_prime_cpu = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
+is_big_cpu   = (max_cap > (unsigned long)RFX_LITTLE_CAP_THRESHOLD);
+
 	if (!rfx_pol->prev_heavy_mode && rfx_pol->in_heavy_mode &&
-	    !rfx_pol->game_launching &&
-		rfx_pol->current_mode == RFX_MODE_GAMING) {
+    	!rfx_pol->game_launching &&
+    	rfx_pol->current_mode == RFX_MODE_GAMING &&
+    	(is_prime_cpu || is_big_cpu)) {
 		rfx_pol->game_launching     = true;
 		rfx_pol->game_launch_end_ns = time + RFX_GAME_LAUNCH_BOOST_NS;
 	}
