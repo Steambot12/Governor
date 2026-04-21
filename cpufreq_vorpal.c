@@ -92,13 +92,13 @@
 #define RFX_SUSTAIN_EXIT_TICKS        64
 
 /* SHORTER GAMING LOCK - Save battery */
-#define RFX_GAMING_LOCK_DURATION_NS   (25000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (60000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              85
-#define RFX_BIG_GAMING_MAX_PCT          87
-#define RFX_PRIME_GAMING_FLOOR_PCT      75
+#define RFX_GAMING_MAX_PCT              88
+#define RFX_BIG_GAMING_MAX_PCT          90
+#define RFX_PRIME_GAMING_FLOOR_PCT      78
 #define RFX_GAME_LAUNCH_FLOOR_PCT       55
 #define RFX_BENCHMARK_MAX_PCT          100
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   20
@@ -134,7 +134,7 @@
 #define RFX_THERMAL_SUSTAIN_EXIT_PCT    20
 #define RFX_THERMAL_GAMING_CAP_MIN_PCT  76
 #define RFX_THERMAL_PRESSURE_TRIGGER_PCT  8
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 68
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 72
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (2000 * NSEC_PER_MSEC)
@@ -416,16 +416,19 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     	rfx_pol->in_benchmark_sustain = false;
     	rfx_pol->sustain_exit_ticks   = 0;
 		
-    	if (util_pct >= 6) {
-        	rfx_pol->in_heavy_mode      = true;
-        	rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
-    	} else if (rfx_pol->gaming_lock_end_ns &&
-               time < rfx_pol->gaming_lock_end_ns) {
-        	rfx_pol->in_heavy_mode      = true;
-        	rfx_pol->sustain_exit_ticks = 0;
-    	} else {
-        	rfx_pol->in_heavy_mode = false;
-    	}
+    	if (util_pct >= 10) {
+    			rfx_pol->in_heavy_mode      = true;
+    			rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
+   				rfx_pol->sustain_exit_ticks = 0;
+			} else if (rfx_pol->gaming_lock_end_ns &&
+           		time < rfx_pol->gaming_lock_end_ns) {
+    			rfx_pol->in_heavy_mode      = true;
+    			rfx_pol->sustain_exit_ticks = 0;
+			} else if (rfx_pol->in_heavy_mode && util_pct >= 4) {
+    			rfx_pol->gaming_lock_end_ns = time + (2000 * NSEC_PER_MSEC);
+			} else {
+    			rfx_pol->in_heavy_mode = false;
+			}
 
 		if (!rfx_pol->in_heavy_mode &&
     		rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
@@ -783,9 +786,9 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 	/* Gaming mode - Balanced headroom */
     if (mode == RFX_MODE_GAMING) {
     	if (is_prime)
-        	headroom_pct = is_heavy ? 48 : 36;
+        	headroom_pct = is_heavy ? 55 : 45;
     	else
-        	headroom_pct = is_heavy ? 48 : 36;
+        	headroom_pct = is_heavy ? 48 : 38;
     	return min(util + util * headroom_pct / 100, max_cap);
 	}
 
@@ -962,54 +965,55 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         	freq = rfx_adaptive_floor(policy, RFX_GAME_LAUNCH_FLOOR_PCT);
 	}
 
-		/* THERMAL OVERRIDE — ADAPTIVE */
-if (rfx_pol->current_mode == RFX_MODE_GAMING &&
-    !rfx_pol->in_benchmark_sustain) {
+	/* THERMAL OVERRIDE — ADAPTIVE */
+	if (rfx_pol->current_mode == RFX_MODE_GAMING &&
+	    !rfx_pol->in_benchmark_sustain) {
 
-    rfx_update_thermal_pressure(rfx_pol, time);
+		rfx_update_thermal_pressure(rfx_pol, time);
 
-    if (!rfx_pol->thermal_gaming_cap_pct)
-        rfx_pol->thermal_gaming_cap_pct = RFX_GAMING_MAX_PCT;
+		if (!rfx_pol->thermal_gaming_cap_pct)
+			rfx_pol->thermal_gaming_cap_pct = RFX_GAMING_MAX_PCT;
 
-    if (rfx_pol->thermal_sustain_active) {
-    effective_cap_pct = rfx_pol->thermal_sustain_cap_pct;
-} else {
-    if (!rfx_pol->thermal_last_check_ns ||
-        (time - rfx_pol->thermal_last_check_ns) > (1000 * NSEC_PER_MSEC)) {
-        rfx_pol->thermal_last_check_ns = time;
+		if (rfx_pol->thermal_sustain_active) {
+			effective_cap_pct = rfx_pol->thermal_sustain_cap_pct;
+		} else {
+			if (!rfx_pol->thermal_last_check_ns ||
+			    (time - rfx_pol->thermal_last_check_ns) > (1000 * NSEC_PER_MSEC)) {
+				rfx_pol->thermal_last_check_ns = time;
 
-        if (rfx_pol->in_heavy_mode &&
-            rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT) {
-            u64 lock_age = time - rfx_pol->mode_switch_time_ns;
-            if (lock_age > (20000 * NSEC_PER_MSEC) &&
-                rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT)
-                rfx_pol->thermal_gaming_cap_pct -= 2;
-            else if (lock_age > (8000 * NSEC_PER_MSEC))
-                rfx_pol->thermal_gaming_cap_pct--;
-        } else if (!rfx_pol->in_heavy_mode) {
-            if (!rfx_pol->gaming_lock_end_ns ||
-                time >= rfx_pol->gaming_lock_end_ns) {
-                u64 light_since = rfx_pol->gaming_lock_end_ns ?
-                    time - rfx_pol->gaming_lock_end_ns : 0;
-                if (light_since > (20000 * NSEC_PER_MSEC) &&
-                    rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
-                    rfx_pol->thermal_gaming_cap_pct++;
-            }
-        }
-        effective_cap_pct = rfx_pol->thermal_gaming_cap_pct;
-    }
-}
-    	if (is_prime) {
-        	unsigned int soft_cap = rfx_adaptive_max(policy, effective_cap_pct);
-        	unsigned int hard_floor = rfx_adaptive_floor(policy,
-                                    	RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
-        	if (soft_cap < hard_floor) soft_cap = hard_floor;
-        	if (freq > soft_cap) freq = soft_cap;
-        	if (freq < hard_floor && rfx_pol->in_heavy_mode) freq = hard_floor;
-    	} else if (!is_little) {
-        	if (freq > rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT))
-            	freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
-    	}
+				if (rfx_pol->in_heavy_mode &&
+				    rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT) {
+					u64 lock_age = time - rfx_pol->mode_switch_time_ns;
+					if (lock_age > (20000 * NSEC_PER_MSEC) &&
+					    rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT)
+						rfx_pol->thermal_gaming_cap_pct -= 2;
+					else if (lock_age > (8000 * NSEC_PER_MSEC))
+						rfx_pol->thermal_gaming_cap_pct--;
+				} else if (!rfx_pol->in_heavy_mode) {
+					if (!rfx_pol->gaming_lock_end_ns ||
+					    time >= rfx_pol->gaming_lock_end_ns) {
+						u64 light_since = rfx_pol->gaming_lock_end_ns ?
+							time - rfx_pol->gaming_lock_end_ns : 0;
+						if (light_since > (20000 * NSEC_PER_MSEC) &&
+						    rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
+							rfx_pol->thermal_gaming_cap_pct++;
+					}
+				}
+				effective_cap_pct = rfx_pol->thermal_gaming_cap_pct;
+			}
+		}
+
+		if (is_prime) {
+			unsigned int soft_cap = rfx_adaptive_max(policy, effective_cap_pct);
+			unsigned int hard_floor = rfx_adaptive_floor(policy,
+						RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+			if (soft_cap < hard_floor) soft_cap = hard_floor;
+			if (freq > soft_cap) freq = soft_cap;
+			if (freq < hard_floor && rfx_pol->in_heavy_mode) freq = hard_floor;
+		} else if (!is_little) {
+			if (freq > rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT))
+				freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
+		}
 	}
 
 
@@ -1688,7 +1692,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 
 	if (max_cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD &&
 	    rfx_pol->in_heavy_mode) {
-		unsigned int little_cap = rfx_adaptive_max(rfx_pol->policy, 75);
+		unsigned int little_cap = rfx_adaptive_max(rfx_pol->policy, 90);
 		if (next_f > little_cap)
 			next_f = little_cap;
 	}
