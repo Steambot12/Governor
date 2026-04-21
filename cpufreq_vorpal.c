@@ -79,7 +79,7 @@
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (200 * NSEC_PER_MSEC)
+#define RFX_BURST_GUARD_NS    (350 * NSEC_PER_MSEC)
 #define RFX_BURST_DROP_THRESHOLD                  12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
@@ -96,9 +96,9 @@
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              88
+#define RFX_GAMING_MAX_PCT              90
 #define RFX_BIG_GAMING_MAX_PCT          90
-#define RFX_PRIME_GAMING_FLOOR_PCT      78
+#define RFX_PRIME_GAMING_FLOOR_PCT      75
 #define RFX_GAME_LAUNCH_FLOOR_PCT       55
 #define RFX_BENCHMARK_MAX_PCT          100
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   20
@@ -133,8 +133,8 @@
 #define RFX_THERMAL_ENABLE               1
 #define RFX_THERMAL_SUSTAIN_EXIT_PCT    20
 #define RFX_THERMAL_GAMING_CAP_MIN_PCT  76
-#define RFX_THERMAL_PRESSURE_TRIGGER_PCT  8
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 70
+#define RFX_THERMAL_PRESSURE_TRIGGER_PCT  15
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 68
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (2000 * NSEC_PER_MSEC)
@@ -728,7 +728,7 @@ static void rfx_update_thermal_pressure(struct rfx_policy *rfx_pol, u64 time)
     unsigned int  pressure_pct;
 
     if (rfx_pol->thermal_pressure_ns &&
-        (time - rfx_pol->thermal_pressure_ns) < (150 * NSEC_PER_MSEC))
+        (time - rfx_pol->thermal_pressure_ns) < (400 * NSEC_PER_MSEC))
         return;
 
     rfx_pol->thermal_pressure_ns = time;
@@ -744,12 +744,12 @@ static void rfx_update_thermal_pressure(struct rfx_policy *rfx_pol, u64 time)
 
     if (pressure_pct >= RFX_THERMAL_PRESSURE_TRIGGER_PCT) {
         rfx_pol->thermal_sustain_active = true;
-        if (pressure_pct > 20)
-            rfx_pol->thermal_sustain_cap_pct = 74;
-        else if (pressure_pct > 12)
-            rfx_pol->thermal_sustain_cap_pct = 78;
+        if (pressure_pct > 30)
+            rfx_pol->thermal_sustain_cap_pct = 80;
+        else if (pressure_pct > 20)
+            rfx_pol->thermal_sustain_cap_pct = 84;
         else
-            rfx_pol->thermal_sustain_cap_pct = 82;
+            rfx_pol->thermal_sustain_cap_pct = 88;
     } else {
         rfx_pol->thermal_sustain_active  = false;
         rfx_pol->thermal_sustain_cap_pct = RFX_GAMING_MAX_PCT;
@@ -896,7 +896,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
     		if (rfx_pol->thermal_sustain_active)
         		effective_down_delay = 1500 * NSEC_PER_USEC;
     		else
-        		effective_down_delay = 5000 * NSEC_PER_USEC;
+        		effective_down_delay = 12000 * NSEC_PER_USEC;
 		}
 
         if (effective_down_delay > 0 &&
@@ -1562,9 +1562,9 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		unsigned int h1 = rfx_c->util_history[(h - 1) & 7]; /* newest */
 		unsigned int h2 = rfx_c->util_history[(h - 2) & 7]; /* -1 cycle */
 		unsigned int h3 = rfx_c->util_history[(h - 3) & 7]; /* -2 cycle */
-		if (h1 > h2 && h2 > h3 && h1 > 15) {
+		if (h1 > h2 && h2 > h3 && h1 > 25) {
 			rfx_pol->in_heavy_mode      = true;
-			rfx_pol->gaming_lock_end_ns = time + (300 * NSEC_PER_MSEC);
+			rfx_pol->gaming_lock_end_ns = time + (800 * NSEC_PER_MSEC);
 		}
 	}
 
