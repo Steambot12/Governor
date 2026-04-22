@@ -98,7 +98,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              92
+#define RFX_GAMING_MAX_PCT              88
 #define RFX_BIG_GAMING_MAX_PCT          88
 #define RFX_PRIME_GAMING_FLOOR_PCT      72
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
@@ -135,9 +135,9 @@ extern unsigned int sysctl_sched_latency;
 /* THERMAL OVERRIDE - Governor-side frequency cap for <43C - TUNED MAJOR */
 #define RFX_THERMAL_ENABLE               1
 #define RFX_THERMAL_SUSTAIN_EXIT_PCT    20
-#define RFX_THERMAL_GAMING_CAP_MIN_PCT  78
+#define RFX_THERMAL_GAMING_CAP_MIN_PCT  80
 #define RFX_THERMAL_PRESSURE_TRIGGER_PCT  18
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 68
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 72
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -257,8 +257,6 @@ struct rfx_tunables {
 	unsigned int		hispeed_boost_pct;
 	enum rfx_cluster_type	cluster_type;
 	unsigned int		gaming_mode;
-	/* TUNED: Adaptive ROM detection */
-	unsigned int		rom_tweak_level;    /* 0=stock, 1=light, 2=heavy */
 };
 
 struct rfx_policy;
@@ -409,7 +407,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
         	rfx_pol->in_heavy_mode = false;
     	}
 
-		/* TUNED: Thermal recovery */
+	/* TUNED: Thermal recovery */
 		if (!rfx_pol->in_heavy_mode &&
     		rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
     		if (!rfx_pol->thermal_last_check_ns ||
@@ -719,13 +717,13 @@ static void rfx_update_thermal_pressure(struct rfx_policy *rfx_pol, u64 time)
     if (pressure_pct >= RFX_THERMAL_PRESSURE_TRIGGER_PCT) {
         rfx_pol->thermal_sustain_active = true;
         if (pressure_pct > 35)
-            rfx_pol->thermal_sustain_cap_pct = 78;
+            rfx_pol->thermal_sustain_cap_pct = 82;   /* was 78 */
         else if (pressure_pct > 25)
-            rfx_pol->thermal_sustain_cap_pct = 82;
+            rfx_pol->thermal_sustain_cap_pct = 85;   /* was 82 */
         else if (pressure_pct > 18)
-            rfx_pol->thermal_sustain_cap_pct = 86;
+            rfx_pol->thermal_sustain_cap_pct = 88;   /* was 86 */
 		else
-			rfx_pol->thermal_sustain_cap_pct = 90; 
+			rfx_pol->thermal_sustain_cap_pct = 92; 
     } else {
         rfx_pol->thermal_sustain_active  = false;
         rfx_pol->thermal_sustain_cap_pct = RFX_GAMING_MAX_PCT;
@@ -946,13 +944,15 @@ if (rfx_pol->current_mode == RFX_MODE_GAMING) {
         rfx_pol->thermal_last_check_ns = time;
 
         if (rfx_pol->in_heavy_mode &&
-            rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT) {
+            rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT &&
+            !rfx_pol->tunables->gaming_mode) {  /* gaming_mode=1: no proactive cap reduction */
             u64 lock_age = time - rfx_pol->mode_switch_time_ns;
             if (lock_age > (15000 * NSEC_PER_MSEC) &&
                 rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT)
                 rfx_pol->thermal_gaming_cap_pct -= 3;
             else if (lock_age > (5000 * NSEC_PER_MSEC))
                 rfx_pol->thermal_gaming_cap_pct -= 1;
+
         } else if (!rfx_pol->in_heavy_mode) {
             if (!rfx_pol->gaming_lock_end_ns ||
                 time >= rfx_pol->gaming_lock_end_ns) {
@@ -966,13 +966,28 @@ if (rfx_pol->current_mode == RFX_MODE_GAMING) {
         effective_cap_pct = rfx_pol->thermal_gaming_cap_pct;
     }
 }
-    	if (is_prime) {
-        	unsigned int soft_cap = rfx_adaptive_max(policy, effective_cap_pct);
-        	unsigned int hard_floor = rfx_adaptive_floor(policy,
+    	    if (is_prime) {
+    		/* gaming_mode=1: let ROM/device policy->max be the cap,
+    		 * don't impose governor-side soft cap on prime.
+    		 * Thermal throttling is handled by the kernel thermal framework.
+    		 */
+    		if (rfx_pol->tunables->gaming_mode) {
+    			unsigned int hard_floor = rfx_adaptive_floor(policy,
+    				RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+    			/* Only enforce floor, not ceiling — ROM decides max */
+    			if (freq < hard_floor && rfx_pol->in_heavy_mode)
+    				freq = hard_floor;
+    			/* Clamp to policy->max (ROM's cpufreq limit) */
+    			if (freq > policy->max)
+    				freq = policy->max;
+    		} else {
+        		unsigned int soft_cap = rfx_adaptive_max(policy, effective_cap_pct);
+        		unsigned int hard_floor = rfx_adaptive_floor(policy,
                                     	RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
-        	if (soft_cap < hard_floor) soft_cap = hard_floor;
-        	if (freq > soft_cap) freq = soft_cap;
-        	if (freq < hard_floor && rfx_pol->in_heavy_mode) freq = hard_floor;
+        		if (soft_cap < hard_floor) soft_cap = hard_floor;
+        		if (freq > soft_cap) freq = soft_cap;
+        		if (freq < hard_floor && rfx_pol->in_heavy_mode) freq = hard_floor;
+        	}
     	} else if (!is_little) {
         	if (freq > rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT))
             	freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
@@ -2023,32 +2038,12 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 static struct governor_attr gaming_mode =
 	__ATTR(gaming_mode, 0644, gaming_mode_show, gaming_mode_store);
 
-static ssize_t rom_tweak_level_show(struct gov_attr_set *attr_set, char *buf)
-{
-	return sprintf(buf, "%u\n", to_rfx_tunables(attr_set)->rom_tweak_level);
-}
-static ssize_t rom_tweak_level_store(struct gov_attr_set *attr_set,
-				     const char *buf, size_t count)
-{
-	struct rfx_tunables *t = to_rfx_tunables(attr_set);
-	unsigned int val;
-	if (kstrtouint(buf, 10, &val))
-		return -EINVAL;
-	if (val > 2)
-		return -EINVAL;
-	t->rom_tweak_level = val;
-	return count;
-}
-static struct governor_attr rom_tweak_level =
-	__ATTR(rom_tweak_level, 0644, rom_tweak_level_show, rom_tweak_level_store);
-
 RFX_TUNABLE_UINT(hispeed_window_us);
 RFX_TUNABLE_UINT(hispeed_filter_shift);
 
 static struct attribute *rfx_little_attrs[] = {
 	&hispeed_boost_pct.attr,
 	&rate_limit_us.attr,
-	&rom_tweak_level.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx_little);
@@ -2059,7 +2054,6 @@ static struct attribute *rfx_big_attrs[] = {
 	&hispeed_filter_shift.attr,
 	&rate_limit_us.attr,
 	&gaming_mode.attr,
-	&rom_tweak_level.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx_big);
@@ -2071,7 +2065,6 @@ static struct attribute *rfx_prime_attrs[] = {
 	&rate_limit_us.attr,
 	&up_rate_limit_us.attr,
 	&gaming_mode.attr,
-	&rom_tweak_level.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx_prime);
@@ -2287,7 +2280,6 @@ static int rfx_init(struct cpufreq_policy *policy)
 	if (rfx_pol->rom_override_active)
 		pr_info("vorpal: ROM tweak detected (level %u), governor override active\n",
 			rfx_pol->rom_tweak_detected);
-	tunables->rom_tweak_level      = 0;                    /* TUNED: Default stock */
 
 	max_cap = arch_scale_cpu_capacity(cpumask_first(policy->cpus));
 
