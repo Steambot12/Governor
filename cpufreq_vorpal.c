@@ -134,9 +134,9 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (12000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (9000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (2500  * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS            (8000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (6000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (2000  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     82
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    88
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
@@ -751,9 +751,9 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
     if (mode == RFX_MODE_GAMING) {
     	if (is_prime)
-        	headroom_pct = is_heavy ? 32 : 25;
+        	headroom_pct = is_heavy ? 26 : 20;
     	else
-        	headroom_pct = is_heavy ? 35 : 28;
+        	headroom_pct = is_heavy ? 32 : 26;
     	return min(util + util * headroom_pct / 100, max_cap);
 	}
 
@@ -822,7 +822,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
         } else if (rfx_pol->thermal_throttle_active) {
             effective_delay = 6000 * NSEC_PER_USEC;
         } else {
-            effective_delay = 12000 * NSEC_PER_USEC;
+            effective_delay = 18000 * NSEC_PER_USEC;
         }
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
         effective_delay = 25 * NSEC_PER_USEC;
@@ -865,7 +865,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
     		if (rfx_pol->thermal_throttle_active)
         		effective_down_delay = 6000 * NSEC_PER_USEC;
     		else
-        		effective_down_delay = 12000 * NSEC_PER_USEC;
+        		effective_down_delay = 18000 * NSEC_PER_USEC;
 		}
 
         if (effective_down_delay > 0 &&
@@ -1550,11 +1550,11 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
 		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
 		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-		if (h1 > h2 && h2 > h3 && h1 > 15) {
+		if (h1 > h2 && h2 > h3 && h1 > 20) {
 			rfx_pol->in_heavy_mode      = true;
-			rfx_pol->gaming_lock_end_ns = time + (300 * NSEC_PER_MSEC);
+			rfx_pol->gaming_lock_end_ns = time + (500 * NSEC_PER_MSEC);
 			rfx_pol->render_urgency_active = true;
-			rfx_pol->render_boost_end_ns = time + (100 * NSEC_PER_MSEC);
+			rfx_pol->render_boost_end_ns = time + (150 * NSEC_PER_MSEC);
 		}
 	}
 
