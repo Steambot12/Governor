@@ -94,13 +94,13 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (2500 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (5000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              84
+#define RFX_GAMING_MAX_PCT              92
 #define RFX_BIG_GAMING_MAX_PCT          86
-#define RFX_PRIME_GAMING_FLOOR_PCT      72
+#define RFX_PRIME_GAMING_FLOOR_PCT      75
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
 #define RFX_LITTLE_GAMING_CAP_PCT       85
@@ -134,12 +134,12 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (15000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (12000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS            (20000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (16000 * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_BURST_NS    (1500  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     85
+#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
-#define RFX_GAMING_MODE_PRIME_FREE       1
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -909,8 +909,9 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	/* LITTLE cluster: strict cap when non-gaming */
 	if (is_little && !rfx_pol->in_heavy_mode &&
-	    !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
-	unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 53);
+    	!rfx_pol->tunables->gaming_mode &&
+    	!(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
+    	unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 53);
 	if (freq > little_nongaming_cap)
     	freq = little_nongaming_cap;
 	}
@@ -928,28 +929,25 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	/* === TIME-BASED DUTY CYCLE THERMAL === */
 	if (rfx_pol->current_mode == RFX_MODE_GAMING) {
-		rfx_thermal_duty_cycle(rfx_pol, time);
+    	if (!rfx_pol->tunables->gaming_mode)
+            rfx_thermal_duty_cycle(rfx_pol, time);
 
-		if (is_prime) {
+        if (is_prime) {
 			if (rfx_pol->tunables->gaming_mode) {
 				unsigned int hard_floor = rfx_adaptive_floor(policy,
 					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
 
 				if (rfx_pol->thermal_throttle_active) {
-					unsigned int duty_cap = rfx_adaptive_max(policy,
-						RFX_THERMAL_THROTTLE_CAP_PCT);
-					if (freq > duty_cap)
-						freq = duty_cap;
 
-					if (freq < hard_floor)
-						freq = hard_floor;
-				} else {
-					if (freq < hard_floor && rfx_pol->in_heavy_mode)
-						freq = hard_floor;
+    			if (freq < hard_floor)
+        			freq = hard_floor;
+			} else {
+    			if (freq < hard_floor && rfx_pol->in_heavy_mode)
+        			freq = hard_floor;
+			}
 
-					if (freq > policy->max)
-						freq = policy->max;
-				}
+				if (freq > policy->max)
+    				freq = policy->max;
 			} else {
 				unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
 				unsigned int hard_floor = rfx_adaptive_floor(policy,
@@ -970,8 +968,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 			if (rfx_pol->tunables->gaming_mode) {
 				if (rfx_pol->thermal_throttle_active) {
-					unsigned int big_duty_cap = rfx_adaptive_max(policy,
-						RFX_THERMAL_THROTTLE_CAP_PCT);
+					unsigned int big_duty_cap = rfx_adaptive_max(policy, RFX_BIG_THERMAL_THROTTLE_CAP_PCT);
 					if (freq > big_duty_cap)
 						freq = big_duty_cap;
 				} else {
