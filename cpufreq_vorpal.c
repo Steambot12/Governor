@@ -135,8 +135,8 @@ extern unsigned int sysctl_sched_latency;
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
 #define RFX_THERMAL_WINDOW_NS            (10000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (7000  * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (1500  * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (9000  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (800  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     82
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  72
 #define RFX_GAMING_MODE_PRIME_FREE       1
@@ -710,6 +710,8 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 			rfx_pol->thermal_throttle_active = false;
 			rfx_pol->thermal_duty_window_start_ns = time;
 			rfx_pol->thermal_sustain_window_count++;
+			if (rfx_pol->thermal_sustain_window_count > 6)
+            	rfx_pol->thermal_sustain_window_count = 6;
 			rfx_pol->thermal_duty_last_active_ns = time;
 		}
 		return;
@@ -924,44 +926,31 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         	freq = rfx_adaptive_floor(policy, RFX_GAME_LAUNCH_FLOOR_PCT);
 	}
 
-	/* === TIME-BASED DUTY CYCLE THERMAL ===
-	 * Tidak bergantung arch_scale_thermal_pressure — works on all ROMs.
-	 * Throttle cap diterapkan periodik setelah gaming berlangsung lama.
-	 */
+	/* === TIME-BASED DUTY CYCLE THERMAL === */
 	if (rfx_pol->current_mode == RFX_MODE_GAMING) {
-		/* Jalankan duty cycle state machine */
 		rfx_thermal_duty_cycle(rfx_pol, time);
 
 		if (is_prime) {
 			if (rfx_pol->tunables->gaming_mode) {
-				/*
-				 * gaming_mode=1: prime mengikuti policy->max dari ROM.
-				 * Governor hanya enforce floor, bukan ceiling.
-				 * Thermal throttle cap tetap diterapkan jika duty
-				 * cycle window aktif.
-				 */
 				unsigned int hard_floor = rfx_adaptive_floor(policy,
 					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
 
 				if (rfx_pol->thermal_throttle_active) {
-					/* Duty cycle window: cap prime ke 82% */
 					unsigned int duty_cap = rfx_adaptive_max(policy,
 						RFX_THERMAL_THROTTLE_CAP_PCT);
 					if (freq > duty_cap)
 						freq = duty_cap;
-					/* Floor tetap dijaga */
+
 					if (freq < hard_floor)
 						freq = hard_floor;
 				} else {
-					/* Bebas throttle: hanya enforce floor */
 					if (freq < hard_floor && rfx_pol->in_heavy_mode)
 						freq = hard_floor;
-					/* Cap ke policy->max (ROM's limit) */
+
 					if (freq > policy->max)
 						freq = policy->max;
 				}
 			} else {
-				/* gaming_mode=0: cap prime ke RFX_GAMING_MAX_PCT */
 				unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
 				unsigned int hard_floor = rfx_adaptive_floor(policy,
 					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
@@ -978,7 +967,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 					freq = hard_floor;
 			}
 		} else if (!is_little) {
-			/* BIG cluster saat gaming */
+
 			if (rfx_pol->tunables->gaming_mode) {
 				if (rfx_pol->thermal_throttle_active) {
 					unsigned int big_duty_cap = rfx_adaptive_max(policy,
@@ -990,7 +979,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 						freq = policy->max;
 				}
 				if (rfx_pol->in_heavy_mode) {
-					unsigned int big_floor = rfx_adaptive_floor(policy, 62);
+					unsigned int big_floor = rfx_adaptive_floor(policy, 68);
 					if (freq < big_floor)
 						freq = big_floor;
 				}
@@ -1321,7 +1310,7 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, unsigned int window_us,
 		if (!rfx_c->rfx_policy->in_heavy_mode)
 			rfx_c->hispeed_idle_windows++;
 
-		idle_win_threshold = is_prime ? 5 : 3; /* faster reset */
+		idle_win_threshold = is_prime ? 5 : 3;
 		if (!interactive_active &&
 		    rfx_c->hispeed_idle_windows > idle_win_threshold) {
 			rfx_c->hispeed_start_ns   = 0;
@@ -1346,7 +1335,7 @@ static unsigned long rfx_blend_util(struct rfx_cpu *rfx_c,
 		    pol->interactive_end_ns &&
 		    time < pol->interactive_end_ns &&
 		    (max_cap <= RFX_LITTLE_CAP_THRESHOLD)) {
-			min_blend = max_cap * 20 / 100; /* 20% LITTLE floor video */
+			min_blend = max_cap * 20 / 100;
 			return (pelt_util > min_blend) ? pelt_util : min_blend;
 		}
 		return pelt_util;
@@ -2227,7 +2216,7 @@ static u8 rfx_detect_rom_tweak(void)
 		score += 1;
 
 	if (score >= 5)
-		return 2; /* heavy tweak: HyperOS 3, aggressively tuned ROM */
+		return 2;
 	else if (score >= 2)
 		return 1; /* light tweak */
 	return 0;   /* stock ROM */
