@@ -132,16 +132,14 @@ extern unsigned int sysctl_sched_latency;
 /* BIG/PRIME floors - COOLER */
 #define RFX_BIG_INTERACTIVE_FLOOR_KHZ  600000
 
-/* THERMAL DUTY */
-#define RFX_THERMAL_WINDOW_NS       (8000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS (1200 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT  82
-#define RFX_THERMAL_GAMING_FLOOR_PCT  72
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 72
+/* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-/* THERMAL OVERRIDE — Adaptive cap for gaming <43C */
-#define RFX_THERMAL_GAMING_CAP_MIN_PCT  80
-#define RFX_THERMAL_PRESSURE_TRIGGER_PCT  18
+#define RFX_THERMAL_WINDOW_NS            (10000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (7000  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (1500  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT     82
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  72
+#define RFX_GAMING_MODE_PRIME_FREE       1
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -311,17 +309,12 @@ struct rfx_policy {
 	bool			in_deep_idle;
 	u64   		game_launch_end_ns;
 	bool  			game_launching;
+	/* Time-based duty cycle thermal */
 	u64             thermal_duty_window_start_ns;
-    u64             thermal_throttle_end_ns;
-    bool            thermal_throttle_active;
-    unsigned int    thermal_sustain_window_count;
-	/* Thermal Pressure Adaptive */
-	unsigned int		thermal_pressure_pct;
-	u64			thermal_pressure_ns;
-	bool			thermal_sustain_active;
-	unsigned int		thermal_sustain_cap_pct;
-	unsigned int		thermal_gaming_cap_pct;
-	u64			thermal_last_check_ns;
+	u64             thermal_throttle_end_ns;
+	bool            thermal_throttle_active;
+	unsigned int    thermal_sustain_window_count;
+	u64             thermal_duty_last_active_ns;
 	u64			render_boost_end_ns;
 	bool			render_urgency_active;
 	/* Auto ROM detection - set at init, NOT user-settable */
@@ -413,15 +406,6 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			rfx_pol->sustain_exit_ticks = 0;
 		} else {
 			rfx_pol->in_heavy_mode = false;
-		}
-
-		if (!rfx_pol->in_heavy_mode &&
-		    rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
-			if (!rfx_pol->thermal_last_check_ns ||
-			    (time - rfx_pol->thermal_last_check_ns) > (1000 * NSEC_PER_MSEC)) {
-				rfx_pol->thermal_gaming_cap_pct++;
-				rfx_pol->thermal_last_check_ns = time;
-			}
 		}
 
 		if (rfx_pol->policy) {
@@ -703,78 +687,43 @@ static unsigned int rfx_get_adaptive_shift(unsigned long util,
 
 static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 {
-    u64 time_since_gaming;
-    u64 window_elapsed;
+	u64 time_since_gaming;
+	u64 window_elapsed;
+	u64 effective_window;
 
-    if (!rfx_pol->in_heavy_mode ||
-        rfx_pol->current_mode != RFX_MODE_GAMING)
-        return;
-
-    if (!rfx_pol->thermal_duty_window_start_ns)
-        rfx_pol->thermal_duty_window_start_ns = time;
-
-    time_since_gaming = time - rfx_pol->mode_switch_time_ns;
-
-    if (time_since_gaming < (5000 * NSEC_PER_MSEC)) {
-        rfx_pol->thermal_throttle_active = false;
-        return;
-    }
-
-    if (rfx_pol->thermal_throttle_active) {
-        if (time >= rfx_pol->thermal_throttle_end_ns) {
-            rfx_pol->thermal_throttle_active = false;
-            rfx_pol->thermal_duty_window_start_ns = time;
-            rfx_pol->thermal_sustain_window_count++;
-        }
-        return;
-    }
-
-    window_elapsed = time - rfx_pol->thermal_duty_window_start_ns;
-    if (window_elapsed >= RFX_THERMAL_WINDOW_NS) {
-        rfx_pol->thermal_throttle_active = true;
-        rfx_pol->thermal_throttle_end_ns = time + RFX_THERMAL_THROTTLE_BURST_NS;
-    }
-}
-
-static void rfx_update_thermal_pressure(struct rfx_policy *rfx_pol, u64 time)
-{
-	unsigned int cpu;
-	unsigned long thermal_pressure = 0;
-	unsigned int pressure_pct;
-
-	if (rfx_pol->thermal_pressure_ns &&
-	    (time - rfx_pol->thermal_pressure_ns) < (200 * NSEC_PER_MSEC))
+	if (!rfx_pol->in_heavy_mode ||
+	    rfx_pol->current_mode != RFX_MODE_GAMING)
 		return;
 
-	rfx_pol->thermal_pressure_ns = time;
+	if (!rfx_pol->thermal_duty_window_start_ns)
+		rfx_pol->thermal_duty_window_start_ns = time;
 
-	if (!rfx_pol->policy)
+	time_since_gaming = time - rfx_pol->mode_switch_time_ns;
+
+	if (time_since_gaming < (5000 * NSEC_PER_MSEC)) {
+		rfx_pol->thermal_throttle_active = false;
 		return;
-
-	for_each_cpu(cpu, rfx_pol->policy->cpus) {
-		unsigned long tp = arch_scale_thermal_pressure(cpu);
-		if (tp > thermal_pressure)
-			thermal_pressure = tp;
 	}
 
-	pressure_pct = (unsigned int)(thermal_pressure * 100 / SCHED_CAPACITY_SCALE);
-	rfx_pol->thermal_pressure_pct = pressure_pct;
+	if (rfx_pol->thermal_throttle_active) {
+		if (time >= rfx_pol->thermal_throttle_end_ns) {
+			rfx_pol->thermal_throttle_active = false;
+			rfx_pol->thermal_duty_window_start_ns = time;
+			rfx_pol->thermal_sustain_window_count++;
+			rfx_pol->thermal_duty_last_active_ns = time;
+		}
+		return;
+	}
 
-	if (pressure_pct >= RFX_THERMAL_PRESSURE_TRIGGER_PCT) {
-		rfx_pol->thermal_sustain_active = true;
-		if (pressure_pct > 45)
-			rfx_pol->thermal_sustain_cap_pct = 83;
-		else if (pressure_pct > 35)
-			rfx_pol->thermal_sustain_cap_pct = 85;
-		else if (pressure_pct > 25)
-			rfx_pol->thermal_sustain_cap_pct = 87;
-		else if (pressure_pct > 18)
-			rfx_pol->thermal_sustain_cap_pct = 90;
-		else
-			rfx_pol->thermal_sustain_cap_pct = 93;
-	} else {
-		rfx_pol->thermal_sustain_active  = false;
-		rfx_pol->thermal_sustain_cap_pct = RFX_GAMING_MAX_PCT;
+	effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
+		? RFX_THERMAL_WINDOW_SHRINK_NS
+		: RFX_THERMAL_WINDOW_NS;
+
+	window_elapsed = time - rfx_pol->thermal_duty_window_start_ns;
+
+	if (window_elapsed >= effective_window) {
+		rfx_pol->thermal_throttle_active    = true;
+		rfx_pol->thermal_throttle_end_ns    = time + RFX_THERMAL_THROTTLE_BURST_NS;
 	}
 }
 
@@ -945,8 +894,6 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	bool is_little = (max <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD);
 	bool is_prime  = (max >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 	unsigned int hispeed_pct;
-	unsigned int effective_cap_pct = rfx_pol->thermal_gaming_cap_pct
-    ? rfx_pol->thermal_gaming_cap_pct : RFX_GAMING_MAX_PCT;
 
 	if (!policy)
 		return 0;
@@ -977,71 +924,83 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         	freq = rfx_adaptive_floor(policy, RFX_GAME_LAUNCH_FLOOR_PCT);
 	}
 
-    /* TUNED: THERMAL OVERRIDE — ADAPTIVE & PROACTIVE */
+	/* === TIME-BASED DUTY CYCLE THERMAL ===
+	 * Tidak bergantung arch_scale_thermal_pressure — works on all ROMs.
+	 * Throttle cap diterapkan periodik setelah gaming berlangsung lama.
+	 */
 	if (rfx_pol->current_mode == RFX_MODE_GAMING) {
-		rfx_update_thermal_pressure(rfx_pol, time);
-
-		if (!rfx_pol->thermal_gaming_cap_pct)
-			rfx_pol->thermal_gaming_cap_pct = RFX_GAMING_MAX_PCT;
-
-		if (rfx_pol->thermal_sustain_active) {
-			effective_cap_pct = rfx_pol->thermal_sustain_cap_pct;
-		} else {
-			if (!rfx_pol->thermal_last_check_ns ||
-			    (time - rfx_pol->thermal_last_check_ns) > (200 * NSEC_PER_MSEC)) {
-				rfx_pol->thermal_last_check_ns = time;
-
-				if (rfx_pol->in_heavy_mode &&
-				    rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT &&
-				    !rfx_pol->tunables->gaming_mode) {
-					u64 lock_age = time - rfx_pol->mode_switch_time_ns;
-					if (lock_age > (15000 * NSEC_PER_MSEC) &&
-					    rfx_pol->thermal_gaming_cap_pct > RFX_THERMAL_GAMING_CAP_MIN_PCT)
-						rfx_pol->thermal_gaming_cap_pct -= 3;
-					else if (lock_age > (5000 * NSEC_PER_MSEC))
-						rfx_pol->thermal_gaming_cap_pct -= 1;
-				} else if (!rfx_pol->in_heavy_mode) {
-					if (!rfx_pol->gaming_lock_end_ns ||
-					    time >= rfx_pol->gaming_lock_end_ns) {
-						u64 light_since = rfx_pol->gaming_lock_end_ns ?
-							time - rfx_pol->gaming_lock_end_ns : 0;
-						if (light_since > (10000 * NSEC_PER_MSEC) &&
-						    rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT)
-							rfx_pol->thermal_gaming_cap_pct += 2;
-					}
-				}
-				effective_cap_pct = rfx_pol->thermal_gaming_cap_pct;
-			}
-		}
+		/* Jalankan duty cycle state machine */
+		rfx_thermal_duty_cycle(rfx_pol, time);
 
 		if (is_prime) {
 			if (rfx_pol->tunables->gaming_mode) {
+				/*
+				 * gaming_mode=1: prime mengikuti policy->max dari ROM.
+				 * Governor hanya enforce floor, bukan ceiling.
+				 * Thermal throttle cap tetap diterapkan jika duty
+				 * cycle window aktif.
+				 */
 				unsigned int hard_floor = rfx_adaptive_floor(policy,
 					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+
+				if (rfx_pol->thermal_throttle_active) {
+					/* Duty cycle window: cap prime ke 82% */
+					unsigned int duty_cap = rfx_adaptive_max(policy,
+						RFX_THERMAL_THROTTLE_CAP_PCT);
+					if (freq > duty_cap)
+						freq = duty_cap;
+					/* Floor tetap dijaga */
+					if (freq < hard_floor)
+						freq = hard_floor;
+				} else {
+					/* Bebas throttle: hanya enforce floor */
+					if (freq < hard_floor && rfx_pol->in_heavy_mode)
+						freq = hard_floor;
+					/* Cap ke policy->max (ROM's limit) */
+					if (freq > policy->max)
+						freq = policy->max;
+				}
+			} else {
+				/* gaming_mode=0: cap prime ke RFX_GAMING_MAX_PCT */
+				unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
+				unsigned int hard_floor = rfx_adaptive_floor(policy,
+					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+
+				if (rfx_pol->thermal_throttle_active) {
+					soft_cap = rfx_adaptive_max(policy,
+						RFX_THERMAL_THROTTLE_CAP_PCT);
+				}
+				if (soft_cap < hard_floor)
+					soft_cap = hard_floor;
+				if (freq > soft_cap)
+					freq = soft_cap;
 				if (freq < hard_floor && rfx_pol->in_heavy_mode)
 					freq = hard_floor;
-				if (freq > policy->max)
-					freq = policy->max;
-			} else {
-				unsigned int soft_cap = rfx_adaptive_max(policy, effective_cap_pct);
-				unsigned int hard_floor = rfx_adaptive_floor(policy,
-					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
-				if (soft_cap < hard_floor) soft_cap = hard_floor;
-				if (freq > soft_cap) freq = soft_cap;
-				if (freq < hard_floor && rfx_pol->in_heavy_mode) freq = hard_floor;
 			}
 		} else if (!is_little) {
+			/* BIG cluster saat gaming */
 			if (rfx_pol->tunables->gaming_mode) {
-				if (freq > policy->max)
-					freq = policy->max;
+				if (rfx_pol->thermal_throttle_active) {
+					unsigned int big_duty_cap = rfx_adaptive_max(policy,
+						RFX_THERMAL_THROTTLE_CAP_PCT);
+					if (freq > big_duty_cap)
+						freq = big_duty_cap;
+				} else {
+					if (freq > policy->max)
+						freq = policy->max;
+				}
 				if (rfx_pol->in_heavy_mode) {
 					unsigned int big_floor = rfx_adaptive_floor(policy, 62);
 					if (freq < big_floor)
 						freq = big_floor;
 				}
 			} else {
-				if (freq > rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT))
-					freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
+				unsigned int big_cap = rfx_adaptive_max(policy,
+					rfx_pol->thermal_throttle_active
+					? RFX_THERMAL_THROTTLE_CAP_PCT
+					: RFX_BIG_GAMING_MAX_PCT);
+				if (freq > big_cap)
+					freq = big_cap;
 			}
 		}
 	}
@@ -1056,7 +1015,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			unsigned int rom_cap   = rfx_adaptive_max(policy, 88);
 			if (rfx_pol->in_heavy_mode && freq < rom_floor)
 				freq = rom_floor;
-			if (!rfx_pol->thermal_sustain_active && freq > rom_cap)
+			if (!rfx_pol->thermal_throttle_active && freq > rom_cap)
 				freq = rom_cap;
 		} else if (rfx_pol->rom_tweak_detected == 1) {
 
@@ -2461,16 +2420,11 @@ static int rfx_start(struct cpufreq_policy *policy)
 	rfx_pol->in_deep_idle        = false;
 	rfx_pol->game_launch_end_ns  = 0;
 	rfx_pol->game_launching      = false;
-	rfx_pol->thermal_duty_window_start_ns = 0;
-    rfx_pol->thermal_throttle_active = false;
-    rfx_pol->thermal_throttle_end_ns = 0;
-    rfx_pol->thermal_sustain_window_count = 0;
-	rfx_pol->thermal_gaming_cap_pct   = 0;
-	rfx_pol->thermal_last_check_ns  = 0;
-	rfx_pol->thermal_pressure_pct   = 0;
-	rfx_pol->thermal_pressure_ns      = 0;
-	rfx_pol->thermal_sustain_active = false;
-	rfx_pol->thermal_sustain_cap_pct = RFX_GAMING_MAX_PCT;
+	rfx_pol->thermal_duty_window_start_ns  = 0;
+	rfx_pol->thermal_throttle_end_ns       = 0;
+	rfx_pol->thermal_throttle_active       = false;
+	rfx_pol->thermal_sustain_window_count  = 0;
+	rfx_pol->thermal_duty_last_active_ns   = 0;
 	rfx_pol->render_urgency_active = false;
 	rfx_pol->render_boost_end_ns   = 0;
 
