@@ -98,7 +98,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              86
+#define RFX_GAMING_MAX_PCT              84
 #define RFX_BIG_GAMING_MAX_PCT          86
 #define RFX_PRIME_GAMING_FLOOR_PCT      72
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
@@ -134,11 +134,11 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (10000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (9000  * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (800  * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT     82
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  72
+#define RFX_THERMAL_WINDOW_NS            (15000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (12000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (1500  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT     85
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
 #define RFX_GAMING_MODE_PRIME_FREE       1
 
 /* Extended interactive - shorter */
@@ -997,7 +997,8 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	/* ROM Override: auto-detected at init, adjusts PRIME floor/cap.
 	 * Applied AFTER thermal cap so ROM override respects thermal limits.
 	 */
-	if (rfx_pol->rom_override_active && is_prime) {
+	if (rfx_pol->rom_override_active && is_prime &&
+    	!rfx_pol->tunables->gaming_mode) {
 		if (rfx_pol->rom_tweak_detected == 2) {
 	
 			unsigned int rom_floor = rfx_adaptive_floor(policy, 75);
