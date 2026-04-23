@@ -98,7 +98,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              92
+#define RFX_GAMING_MAX_PCT              88
 #define RFX_BIG_GAMING_MAX_PCT          86
 #define RFX_PRIME_GAMING_FLOOR_PCT      75
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
@@ -134,11 +134,11 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (20000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (16000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (1500  * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT     85
-#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
+#define RFX_THERMAL_WINDOW_NS            (12000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (9000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (2500  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT     82
+#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    88
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
 
 /* Extended interactive - shorter */
@@ -391,7 +391,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 	}
 
 	/* Gaming mode tunable - user explicitly set via sysfs */
-		if (rfx_pol->tunables->gaming_mode) {
+	if (rfx_pol->tunables->gaming_mode) {
 		rfx_pol->current_mode       = RFX_MODE_GAMING;
 		rfx_pol->in_light_mode      = false;
 		rfx_pol->force_idle         = false;
@@ -700,9 +700,9 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 
 	time_since_gaming = time - rfx_pol->mode_switch_time_ns;
 
-	if (time_since_gaming < (5000 * NSEC_PER_MSEC)) {
-		rfx_pol->thermal_throttle_active = false;
-		return;
+	if (time_since_gaming < (3000 * NSEC_PER_MSEC)) {
+    	rfx_pol->thermal_throttle_active = false;
+    	return;
 	}
 
 	if (rfx_pol->thermal_throttle_active) {
@@ -934,20 +934,18 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
         if (is_prime) {
 			if (rfx_pol->tunables->gaming_mode) {
-				unsigned int hard_floor = rfx_adaptive_floor(policy,
-					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+    			unsigned int hard_floor = rfx_adaptive_floor(policy,
+        		RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
 
-				if (rfx_pol->thermal_throttle_active) {
-
-    			if (freq < hard_floor)
+    		/* gaming_mode=1: ignore stale throttle state,
+    		* let ROM policy->max be the ceiling */
+    			if (rfx_pol->in_heavy_mode && freq < hard_floor)
         			freq = hard_floor;
-			} else {
-    			if (freq < hard_floor && rfx_pol->in_heavy_mode)
-        			freq = hard_floor;
-			}
 
-				if (freq > policy->max)
-    				freq = policy->max;
+    		/* Clamp to policy->max = ROM/device thermal policy */
+    			if (freq > policy->max)
+        			freq = policy->max;
+
 			} else {
 				unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
 				unsigned int hard_floor = rfx_adaptive_floor(policy,
@@ -966,20 +964,16 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			}
 		} else if (!is_little) {
 
-			if (rfx_pol->tunables->gaming_mode) {
-				if (rfx_pol->thermal_throttle_active) {
-					unsigned int big_duty_cap = rfx_adaptive_max(policy, RFX_BIG_THERMAL_THROTTLE_CAP_PCT);
-					if (freq > big_duty_cap)
-						freq = big_duty_cap;
-				} else {
-					if (freq > policy->max)
-						freq = policy->max;
-				}
-				if (rfx_pol->in_heavy_mode) {
-					unsigned int big_floor = rfx_adaptive_floor(policy, 68);
-					if (freq < big_floor)
-						freq = big_floor;
-				}
+				if (rfx_pol->tunables->gaming_mode) {
+    			/* gaming_mode=1: ROM decides ceiling via policy->max */
+    				if (freq > policy->max)
+        				freq = policy->max;
+    				if (rfx_pol->in_heavy_mode) {
+        			unsigned int big_floor = rfx_adaptive_floor(policy,
+            			RFX_BIG_INTERACTIVE_FLOOR_PCT);
+        			if (freq < big_floor)
+            			freq = big_floor;
+    				}
 			} else {
 				unsigned int big_cap = rfx_adaptive_max(policy,
 					rfx_pol->thermal_throttle_active
