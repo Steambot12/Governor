@@ -39,14 +39,14 @@ extern unsigned int sysctl_sched_latency;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    12000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    8000
 
 /* Default: Ultra-fast 10us for instant response */
 #define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        10
 #define CPUFREQ_VORPAL_UP_RATE_LIMIT_US             0
 
 /* BIG: balance between gaming stability and battery */
-#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    12000
+#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    8000
 
 /* LITTLE: AGGRESSIVE IDLE - Fix stuck issue */
 #define CPUFREQ_VORPAL_LITTLE_UP_RATE_LIMIT_US      0
@@ -82,24 +82,24 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (180 * NSEC_PER_MSEC)
+#define RFX_BURST_GUARD_NS    (160 * NSEC_PER_MSEC)
 #define RFX_BURST_DROP_THRESHOLD                  12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   20
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT     5
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   35
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT    20
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS        32
+#define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (30000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (2500 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              88
-#define RFX_BIG_GAMING_MAX_PCT          88
+#define RFX_GAMING_MAX_PCT              86
+#define RFX_BIG_GAMING_MAX_PCT          86
 #define RFX_PRIME_GAMING_FLOOR_PCT      72
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
@@ -157,8 +157,8 @@ extern unsigned int sysctl_sched_latency;
 
 #define RFX_ACT_IDLE_TO_LIGHT_PCT  4
 #define RFX_ACT_LIGHT_TO_MED_PCT  20
-#define RFX_ACT_MED_TO_HEAVY_PCT  30
-#define RFX_ACT_HEAVY_TO_MED_PCT  20
+#define RFX_ACT_MED_TO_HEAVY_PCT  40
+#define RFX_ACT_HEAVY_TO_MED_PCT  22
 #define RFX_ACT_MED_TO_LIGHT_PCT   6
 #define RFX_ACT_LIGHT_TO_IDLE_PCT  3
 
@@ -409,13 +409,13 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 
 	/* TUNED: Thermal recovery */
 		if (!rfx_pol->in_heavy_mode &&
-    		rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
-    		if (!rfx_pol->thermal_last_check_ns ||
-        		(time - rfx_pol->thermal_last_check_ns) > (2000 * NSEC_PER_MSEC)) {
-        		rfx_pol->thermal_gaming_cap_pct++;
-        		rfx_pol->thermal_last_check_ns = time;
-    		}
-		}
+            rfx_pol->thermal_gaming_cap_pct < RFX_GAMING_MAX_PCT) {
+            if (!rfx_pol->thermal_last_check_ns ||
+                (time - rfx_pol->thermal_last_check_ns) > (1000 * NSEC_PER_MSEC)) {
+                rfx_pol->thermal_gaming_cap_pct++;
+                rfx_pol->thermal_last_check_ns = time;
+            }
+        }
 
     	if (rfx_pol->policy) {
         	unsigned long cap = arch_scale_cpu_capacity(
@@ -716,14 +716,16 @@ static void rfx_update_thermal_pressure(struct rfx_policy *rfx_pol, u64 time)
 
     if (pressure_pct >= RFX_THERMAL_PRESSURE_TRIGGER_PCT) {
         rfx_pol->thermal_sustain_active = true;
-        if (pressure_pct > 35)
-            rfx_pol->thermal_sustain_cap_pct = 82;   /* was 78 */
+        if (pressure_pct > 45)
+            rfx_pol->thermal_sustain_cap_pct = 83;
+        else if (pressure_pct > 35)
+            rfx_pol->thermal_sustain_cap_pct = 85;
         else if (pressure_pct > 25)
-            rfx_pol->thermal_sustain_cap_pct = 85;   /* was 82 */
+            rfx_pol->thermal_sustain_cap_pct = 87;
         else if (pressure_pct > 18)
-            rfx_pol->thermal_sustain_cap_pct = 88;   /* was 86 */
-		else
-			rfx_pol->thermal_sustain_cap_pct = 92; 
+            rfx_pol->thermal_sustain_cap_pct = 90;
+        else
+            rfx_pol->thermal_sustain_cap_pct = 93;
     } else {
         rfx_pol->thermal_sustain_active  = false;
         rfx_pol->thermal_sustain_cap_pct = RFX_GAMING_MAX_PCT;
@@ -752,9 +754,9 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
     if (mode == RFX_MODE_GAMING) {
     	if (is_prime)
-        	headroom_pct = is_heavy ? 42 : 32;
+        	headroom_pct = is_heavy ? 32 : 25;
     	else
-        	headroom_pct = is_heavy ? 38 : 28;
+        	headroom_pct = is_heavy ? 35 : 28;
     	return min(util + util * headroom_pct / 100, max_cap);
 	}
 
@@ -988,10 +990,22 @@ if (rfx_pol->current_mode == RFX_MODE_GAMING) {
         		if (freq > soft_cap) freq = soft_cap;
         		if (freq < hard_floor && rfx_pol->in_heavy_mode) freq = hard_floor;
         	}
-    	} else if (!is_little) {
-        	if (freq > rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT))
-            	freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
-    	}
+    		} else if (!is_little) {
+        	if (rfx_pol->tunables->gaming_mode) {
+
+            	if (freq > policy->max)
+                	freq = policy->max;
+
+            	if (rfx_pol->in_heavy_mode) {
+                	unsigned int big_floor = rfx_adaptive_floor(policy, 62);
+                if (freq < big_floor)
+                    freq = big_floor;
+            	}
+        	} else {
+            	if (freq > rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT))
+                	freq = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
+        		}
+    		}
 	}
 
 	/* ROM Override: auto-detected at init, adjusts PRIME floor/cap.
