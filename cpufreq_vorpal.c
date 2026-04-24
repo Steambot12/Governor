@@ -94,13 +94,13 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (5000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (8000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (15000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              88
 #define RFX_BIG_GAMING_MAX_PCT          86
-#define RFX_PRIME_GAMING_FLOOR_PCT      75
+#define RFX_PRIME_GAMING_FLOOR_PCT      80
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
 #define RFX_LITTLE_GAMING_CAP_PCT       85
@@ -405,8 +405,10 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			rfx_pol->in_heavy_mode      = true;
 			rfx_pol->sustain_exit_ticks = 0;
 		} else {
+		if (!rfx_pol->gaming_lock_end_ns ||
+		    (time - rfx_pol->gaming_lock_end_ns) > (3000 * NSEC_PER_MSEC))
 			rfx_pol->in_heavy_mode = false;
-		}
+	}
 
 		if (rfx_pol->policy) {
 			unsigned long cap = arch_scale_cpu_capacity(
@@ -1009,10 +1011,10 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	if (rfx_pol->render_urgency_active && rfx_pol->render_boost_end_ns &&
 	    time < rfx_pol->render_boost_end_ns) {
-		if (is_prime && freq < rfx_adaptive_floor(policy, 75))
-			freq = rfx_adaptive_floor(policy, 75);
-		else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 65))
-			freq = rfx_adaptive_floor(policy, 65);
+		if (is_prime && freq < rfx_adaptive_floor(policy, 85))  /* was 75 — stronger render boost */
+			freq = rfx_adaptive_floor(policy, 85);
+		else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 72))  /* was 65 */
+			freq = rfx_adaptive_floor(policy, 72);
 	}
 
 	if (rfx_pol->in_heavy_mode &&
@@ -1545,16 +1547,25 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util, max_cap, is_big_cluster, time);
 	}
 
-	if (rfx_pol->tunables->gaming_mode) {
+		if (rfx_pol->tunables->gaming_mode) {
 		unsigned int h  = rfx_c->util_history_idx;
 		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
 		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
 		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-		if (h1 > h2 && h2 > h3 && h1 > 20) {
+		/* Pattern 1: gradual rising (existing) */
+		bool rising = h1 > h2 && h2 > h3 && h1 > 20;
+		/* Pattern 2: sudden spike from idle/low — catch swipe/gesture bursts */
+		bool sudden_spike = (h1 > 30) && (h2 < 20) && (h1 > h2 + 15);
+		/* Pattern 3: high-but-flat load staying heavy */
+		bool sustained_heavy = (h1 >= 35) && (h2 >= 35) && (h3 >= 35);
+
+		if (rising || sudden_spike || sustained_heavy) {
 			rfx_pol->in_heavy_mode      = true;
-			rfx_pol->gaming_lock_end_ns = time + (500 * NSEC_PER_MSEC);
+			rfx_pol->gaming_lock_end_ns = time + (800 * NSEC_PER_MSEC); /* was 500ms */
 			rfx_pol->render_urgency_active = true;
-			rfx_pol->render_boost_end_ns = time + (150 * NSEC_PER_MSEC);
+			/* sudden spike gets longer boost window */
+			rfx_pol->render_boost_end_ns = time +
+				(sudden_spike ? (300 * NSEC_PER_MSEC) : (150 * NSEC_PER_MSEC));
 		}
 	}
 
