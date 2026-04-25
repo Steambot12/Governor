@@ -1015,8 +1015,8 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	    time < rfx_pol->render_boost_end_ns) {
 		if (is_prime && freq < rfx_adaptive_floor(policy, 85))  /* was 75 — stronger render boost */
 			freq = rfx_adaptive_floor(policy, 85);
-		else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 72))  /* was 65 */
-			freq = rfx_adaptive_floor(policy, 72);
+		else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 78))
+        	freq = rfx_adaptive_floor(policy, 78);
 	}
 
 	if (rfx_pol->in_heavy_mode &&
@@ -1560,14 +1560,16 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		bool sudden_spike = (h1 > 30) && (h2 < 20) && (h1 > h2 + 15);
 		/* Pattern 3: high-but-flat load staying heavy */
 		bool sustained_heavy = (h1 >= 35) && (h2 >= 35) && (h3 >= 35);
+		/* Pattern 4: burst-dip-burst (WuWa animation sequence) */
+		bool wuwa_anim = (h1 > 25) && (h3 > 25) && (h2 < 18);
 
-		if (rising || sudden_spike || sustained_heavy) {
-			rfx_pol->in_heavy_mode      = true;
-			rfx_pol->gaming_lock_end_ns = time + (800 * NSEC_PER_MSEC); /* was 500ms */
-			rfx_pol->render_urgency_active = true;
-			/* sudden spike gets longer boost window */
-			rfx_pol->render_boost_end_ns = time +
-				(sudden_spike ? (300 * NSEC_PER_MSEC) : (150 * NSEC_PER_MSEC));
+		if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
+    		rfx_pol->in_heavy_mode      = true;
+    		rfx_pol->gaming_lock_end_ns = time +
+        		(sudden_spike || wuwa_anim ? (1200 * NSEC_PER_MSEC) : (800 * NSEC_PER_MSEC));
+    		rfx_pol->render_urgency_active = true;
+    		rfx_pol->render_boost_end_ns = time +
+        		(sudden_spike || wuwa_anim ? (600 * NSEC_PER_MSEC) : (150 * NSEC_PER_MSEC));
 		}
 	}
 
