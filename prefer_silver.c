@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * prefer_silver.c v2.3
+ * prefer_silver.c v2.3.1
  *
  * Fix v2.0:
  *  - prefer_silver_update_task() dipindah setelah semua static helpers
@@ -28,10 +28,13 @@
  *    tambah CPUFREQ_POLICY_NOTIFIER yang mengisi ps_gold_max_freq saat
  *    CPUFREQ_CREATE_POLICY event. Freq gate kini aktif otomatis.
  *  - Fix #2: big_core_guard_ns default 80ms → 40ms untuk 120fps gaming.
- *    Guard 80ms terlalu konservatif: 1 frame=8.33ms, 40ms = ~5 frame.
- *  - Fix #3: burst_decay_ns default 150ms → 80ms. Sinkron dengan guard.
- *  - Fix #4: detect_cluster_capacity() tidak panggil cpufreq_quick_get_max()
- *    lagi — sepenuhnya diserahkan ke notifier.
+ *  - Fix #3: burst_decay_ns default 150ms → 80ms.
+ *  - Fix #4: detect_cluster_capacity() tidak panggil cpufreq_quick_get_max().
+ *
+ * Fix v2.3.1:
+ *  - Fix build error: CPUFREQ_NOTIFY tidak ada di kernel 5.10.
+ *    CPUFREQ_POLICY_NOTIFIER hanya punya CPUFREQ_CREATE_POLICY dan
+ *    CPUFREQ_REMOVE_POLICY. Hapus cek CPUFREQ_NOTIFY dari notifier handler.
  */
 
 #include <linux/sched.h>
@@ -54,9 +57,9 @@ int sysctl_cpu_util_thresh   = 85;   /* silver CPU util % max */
 int sysctl_freq_ratio_thresh = 95;   /* silver_freq / gold_max_freq % max */
 
 /* v2.0 tunables — v2.3: big_core_guard 80ms→40ms, burst_decay 150ms→80ms */
-unsigned long sysctl_big_core_guard_ns = 40000000UL;  /* 40ms (v2.3: dari 80ms) */
+unsigned long sysctl_big_core_guard_ns = 40000000UL;  /* 40ms */
 int           sysctl_burst_thresh      = 35;           /* 35% silver_cap */
-unsigned long sysctl_burst_decay_ns    = 80000000UL;  /* 80ms (v2.3: dari 150ms) */
+unsigned long sysctl_burst_decay_ns    = 80000000UL;  /* 80ms */
 
 
 /* ------------------------------------------------------------------ *
@@ -65,7 +68,6 @@ unsigned long sysctl_burst_decay_ns    = 80000000UL;  /* 80ms (v2.3: dari 150ms)
 #define PS_TASK_SLOTS     512
 #define PS_TASK_HASH(pid) ((unsigned int)(pid) & (PS_TASK_SLOTS - 1))
 
-/* v2.2: 500ms slot-reuse guard — cegah collision reset state aktif */
 #define PS_SLOT_REUSE_NS  500000000ULL
 
 struct ps_task_state {
@@ -96,7 +98,7 @@ atomic_t ps_miss_burst      = ATOMIC_INIT(0);
 
 
 /* ------------------------------------------------------------------ *
- * Cluster state — dideklarasikan sebelum semua fungsi yang memakai
+ * Cluster state
  * ------------------------------------------------------------------ */
 unsigned long ps_silver_cap;
 unsigned long ps_gold_cap;
@@ -106,9 +108,6 @@ cpumask_t     ps_silver_online;
 atomic_t      ps_detected = ATOMIC_INIT(0);
 
 
-/* ------------------------------------------------------------------ *
- * cpu_is_silver — static inline, dideklarasikan sebelum semua caller
- * ------------------------------------------------------------------ */
 static inline bool cpu_is_silver(int cpu)
 {
 	return cpumask_test_cpu(cpu, &ps_silver_mask);
@@ -116,7 +115,7 @@ static inline bool cpu_is_silver(int cpu)
 
 
 /* ------------------------------------------------------------------ *
- * Debugfs — /sys/kernel/debug/prefer_silver/
+ * Debugfs
  * ------------------------------------------------------------------ */
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
@@ -266,13 +265,7 @@ static bool detect_cluster_capacity(void)
 	ps_gold_cap   = (second_cap == ULONG_MAX) ? (min_cap * 2) : second_cap;
 	cpumask_copy(&ps_silver_mask, &tmp_silver_mask);
 
-	/*
-	 * v2.3 Fix #4: Hapus cpufreq_quick_get_max() dari sini.
-	 * CPUFreq policy belum terdaftar saat late_initcall, sehingga
-	 * cpufreq_quick_get_max() selalu return 0. ps_gold_max_freq
-	 * sekarang diisi sepenuhnya oleh ps_cpufreq_policy_nb() via
-	 * CPUFREQ_POLICY_NOTIFIER saat policy benar-benar siap.
-	 */
+	/* ps_gold_max_freq diisi oleh ps_cpufreq_policy_nb via notifier */
 
 	update_silver_online();
 
@@ -289,18 +282,15 @@ static bool detect_cluster_capacity(void)
 
 
 /*
- * v2.3 Fix #1: CPUFreq policy notifier untuk mengisi ps_gold_max_freq.
+ * v2.3 / v2.3.1: CPUFreq policy notifier.
  *
- * Root cause gold_max_freq=0:
- *   cpufreq_quick_get_max() dipanggil di detect_cluster_capacity() yang
- *   dijalankan dari late_initcall. Pada titik ini, CPUFreq driver (biasanya
- *   qcom-cpufreq-hw) belum selesai mendaftarkan policy untuk semua cluster,
- *   sehingga fungsi tersebut return 0.
+ * Kernel 5.10 CPUFREQ_POLICY_NOTIFIER hanya mengirim dua event:
+ *   CPUFREQ_CREATE_POLICY  — policy baru dibuat saat driver init/CPU hotplug
+ *   CPUFREQ_REMOVE_POLICY  — policy dihapus
  *
- * Solusi: daftarkan CPUFREQ_POLICY_NOTIFIER. Event CPUFREQ_CREATE_POLICY
- * dijamin terjadi SETELAH driver mendaftarkan policy lengkap dengan
- * cpuinfo.max_freq yang valid. Notifier ini juga menangani kasus CPU hotplug
- * saat policy di-recreate.
+ * CPUFREQ_NOTIFY tidak ada di 5.10 (dihapus sejak kernel 4.x transisi).
+ * Notifier ini hanya perlu react ke CPUFREQ_CREATE_POLICY untuk mengisi
+ * ps_gold_max_freq dengan cpuinfo.max_freq yang valid.
  */
 static int ps_cpufreq_policy_nb_fn(struct notifier_block *nb,
 				   unsigned long event, void *data)
@@ -310,19 +300,13 @@ static int ps_cpufreq_policy_nb_fn(struct notifier_block *nb,
 	unsigned long cur_gold_max;
 	int cpu, prime_cpu = -1;
 
-	/* Hanya proses saat policy baru dibuat atau diupdate */
-	if (event != CPUFREQ_CREATE_POLICY && event != CPUFREQ_NOTIFY)
+	/* v2.3.1: hanya CPUFREQ_CREATE_POLICY yang valid di kernel 5.10 */
+	if (event != CPUFREQ_CREATE_POLICY)
 		return NOTIFY_DONE;
 
-	/* Pastikan deteksi cluster sudah selesai */
 	if (!atomic_read(&ps_detected))
 		return NOTIFY_DONE;
 
-	/*
-	 * Cari CPU dengan kapasitas tertinggi dalam policy ini.
-	 * Policy biasanya mencakup satu cluster (semua CPU silver dalam
-	 * satu policy, semua gold dalam satu policy, dll).
-	 */
 	for_each_cpu(cpu, policy->related_cpus) {
 		unsigned long c = capacity_orig_of(cpu);
 		if (c > max_cap) {
@@ -331,20 +315,14 @@ static int ps_cpufreq_policy_nb_fn(struct notifier_block *nb,
 		}
 	}
 
-	/* Skip jika ini silver cluster atau tidak ada CPU valid */
 	if (prime_cpu < 0 || cpu_is_silver(prime_cpu))
 		return NOTIFY_DONE;
 
-	/*
-	 * Update ps_gold_max_freq hanya jika freq policy ini lebih tinggi
-	 * dari yang sudah tersimpan. Ini memastikan yang tersimpan selalu
-	 * merupakan freq tertinggi dari cluster paling kuat (prime).
-	 */
 	cur_gold_max = READ_ONCE(ps_gold_max_freq);
 	if (policy->cpuinfo.max_freq > cur_gold_max) {
 		WRITE_ONCE(ps_gold_max_freq, policy->cpuinfo.max_freq);
-		pr_info("prefer_silver: gold_max_freq=%u kHz via cpu%d policy (cap=%lu)\n",
-			policy->cpuinfo.max_freq, prime_cpu, max_cap);
+		pr_info("prefer_silver: gold_max_freq=%u kHz via cpu%d policy\n",
+			policy->cpuinfo.max_freq, prime_cpu);
 	}
 
 	return NOTIFY_DONE;
@@ -380,12 +358,6 @@ static int ps_cpu_online_cb(unsigned int cpu)
 		if (cpu_is_silver(cpu)) {
 			cpumask_set_cpu(cpu, &ps_silver_online);
 		} else {
-			/*
-			 * CPU non-silver online: coba refresh gold_max_freq.
-			 * cpufreq_quick_get_max() lebih mungkin berhasil di sini
-			 * karena CPU sudah online dan policy sudah siap.
-			 * Tapi tetap prioritaskan nilai dari notifier (biasanya lebih akurat).
-			 */
 			unsigned long cur = READ_ONCE(ps_gold_max_freq);
 			unsigned long this_cap = capacity_orig_of(cpu);
 
@@ -437,10 +409,6 @@ unsigned long ps_cpu_util(int cpu)
 }
 
 
-/*
- * v2.2 Fix #2: Guard ps_detected untuk early boot safety.
- * ps_silver_cap belum valid sebelum detect_cluster_capacity() sukses.
- */
 static inline unsigned long ps_task_util_pct(struct task_struct *p)
 {
 	unsigned long util = ps_task_util(p);
@@ -468,10 +436,6 @@ static inline unsigned long ps_cpu_util_pct(int cpu)
 
 /* ------------------------------------------------------------------ *
  * Per-task cache helper
- *
- * v2.2 Fix #1: Hash collision protection dengan 500ms guard.
- * Return NULL jika slot masih aktif dipakai task lain.
- * Caller WAJIB cek NULL sebelum akses state.
  * ------------------------------------------------------------------ */
 static struct ps_task_state *ps_get_task_state(pid_t pid)
 {
@@ -484,12 +448,9 @@ static struct ps_task_state *ps_get_task_state(pid_t pid)
 			u64 last_active = max(s->last_big_ts, s->last_burst_ts);
 
 			if (last_active &&
-			    (now - last_active) < PS_SLOT_REUSE_NS) {
-				/* Slot masih aktif dipakai task lain */
+			    (now - last_active) < PS_SLOT_REUSE_NS)
 				return NULL;
-			}
 		}
-		/* Slot kosong atau sudah expired, aman dipakai */
 		s->pid           = pid;
 		s->last_big_ts   = 0;
 		s->last_burst_ts = 0;
@@ -500,7 +461,7 @@ static struct ps_task_state *ps_get_task_state(pid_t pid)
 
 
 /* ------------------------------------------------------------------ *
- * prefer_silver_update_task — dipanggil dari scheduler tick / migrate
+ * prefer_silver_update_task
  * ------------------------------------------------------------------ */
 void prefer_silver_update_task(struct task_struct *p, int cpu)
 {
@@ -521,7 +482,6 @@ void prefer_silver_update_task(struct task_struct *p, int cpu)
 	s = ps_get_task_state(p->pid);
 
 	if (!s) {
-		/* Hash collision: slot masih aktif task lain, skip */
 		spin_unlock_irqrestore(&ps_task_lock, flags);
 		return;
 	}
@@ -564,11 +524,6 @@ static inline bool ps_check_bigcore_recency(struct task_struct *p)
 	if (!sysctl_big_core_guard_ns)
 		return true;
 
-	/*
-	 * Lockless READ_ONCE: aman pada arm64 karena u64 adalah aligned
-	 * natural-size access. WRITE_ONCE di update_task() menjamin
-	 * tidak ada torn read.
-	 */
 	last_big = READ_ONCE(ps_task_cache[slot].last_big_ts);
 	if (!last_big)
 		return true;
@@ -614,25 +569,21 @@ int find_best_silver_cpu(struct task_struct *p)
 	if (!ps_ensure_detected())
 		return -1;
 
-	/* Guard 1: uclamp_min > 0 → task diprioritaskan ke big core */
 	if (!ps_check_uclamp(p)) {
 		atomic_inc(&ps_miss_count);
 		atomic_inc(&ps_miss_uclamp);
 		return -1;
 	}
-	/* Guard 2: task baru saja jalan di big core (default 40ms) */
 	if (!ps_check_bigcore_recency(p)) {
 		atomic_inc(&ps_miss_count);
 		atomic_inc(&ps_miss_bigcore);
 		return -1;
 	}
-	/* Guard 3: task baru saja burst (default 80ms) */
 	if (!ps_check_burst_decay(p)) {
 		atomic_inc(&ps_miss_count);
 		atomic_inc(&ps_miss_burst);
 		return -1;
 	}
-	/* Guard 4: task util melebihi threshold */
 	task_util_pct = ps_task_util_pct(p);
 	if (task_util_pct >= (unsigned long)sysctl_heavy_task_thresh) {
 		atomic_inc(&ps_miss_count);
@@ -640,12 +591,6 @@ int find_best_silver_cpu(struct task_struct *p)
 		return -1;
 	}
 
-	/*
-	 * v2.2 Fix #4: skip_freq_gate hanya untuk task benar-benar idle
-	 * (util < 15% silver_cap). Task di atas itu tetap kena freq check.
-	 * Penting setelah v2.3: freq gate kini aktif (gold_max_freq != 0),
-	 * jadi skip_freq_gate harus se-konservatif mungkin.
-	 */
 	skip_freq_gate = (task_util_pct < 15);
 
 retry:
@@ -696,11 +641,6 @@ retry:
 		return best_cpu;
 	}
 
-	/*
-	 * v2.2 Fix #5: Fallback path — hard cap 75% utilization.
-	 * Jika silver fallback > 75% util, lepaskan ke scheduler daripada
-	 * memaksa task ke silver yang sudah crowded.
-	 */
 	if (best_cpu_fallback >= 0 && !aff_blocked) {
 		unsigned long g_util;
 		unsigned long fallback_util_pct;
@@ -741,19 +681,13 @@ miss:
 
 
 /* ------------------------------------------------------------------ *
- * Check functions (dipanggil dari fair.c)
+ * Check functions
  * ------------------------------------------------------------------ */
 bool prefer_silver_check_freq(int cpu)
 {
 	unsigned long silver_freq = (unsigned long)cpufreq_quick_get(cpu);
 	unsigned long gold_max    = READ_ONCE(ps_gold_max_freq);
 
-	/*
-	 * Jika gold_max_freq belum terisi (notifier belum terpanggil),
-	 * bypass freq gate agar prefer_silver tetap bisa bekerja.
-	 * Ini safe karena notifier akan mengisi nilainya segera setelah
-	 * CPUFreq driver selesai init.
-	 */
 	if (!silver_freq || !gold_max)
 		return true;
 	return silver_freq <= (gold_max * sysctl_freq_ratio_thresh / 100);
@@ -869,11 +803,10 @@ int __init prefer_silver_init(void)
 	cpumask_clear(&ps_silver_online);
 	memset(ps_task_cache, 0, sizeof(ps_task_cache));
 
-	if (detect_cluster_capacity()) {
+	if (detect_cluster_capacity())
 		atomic_set(&ps_detected, 1);
-	} else {
+	else
 		schedule_delayed_work(&ps_detect_work, msecs_to_jiffies(3000));
-	}
 
 	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN,
 					"sched/prefer_silver:online",
@@ -881,12 +814,6 @@ int __init prefer_silver_init(void)
 	if (ret < 0)
 		pr_warn("prefer_silver: cpuhp register failed (%d)\n", ret);
 
-	/*
-	 * v2.3 Fix #1: Daftarkan CPUFreq policy notifier.
-	 * Notifier ini akan mengisi ps_gold_max_freq saat CPUFREQ_CREATE_POLICY
-	 * dipanggil oleh driver CPUFreq (setelah late_initcall selesai).
-	 * Tanpa ini, gold_max_freq tetap 0 dan freq gate tidak pernah aktif.
-	 */
 	ret = cpufreq_register_notifier(&ps_cpufreq_policy_nb,
 					CPUFREQ_POLICY_NOTIFIER);
 	if (ret)
@@ -901,8 +828,8 @@ int __init prefer_silver_init(void)
 	}
 	prefer_silver_debugfs_init();
 
-	pr_info("prefer_silver v2.3: init OK | enabled=%d heavy=%d%% cpu=%d%% "
-		"guard=%lums burst_decay=%lums skip_freq_gate_thresh=15%%\n",
+	pr_info("prefer_silver v2.3.1: init OK | enabled=%d heavy=%d%% cpu=%d%% "
+		"guard=%lums burst_decay=%lums\n",
 		sysctl_prefer_silver,
 		sysctl_heavy_task_thresh,
 		sysctl_cpu_util_thresh,
