@@ -52,14 +52,14 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 55;   /* task util % relatif silver_cap */
+int sysctl_heavy_task_thresh = 40;   /* task util % relatif silver_cap */
 int sysctl_cpu_util_thresh   = 85;   /* silver CPU util % max */
 int sysctl_freq_ratio_thresh = 95;   /* silver_freq / gold_max_freq % max */
 
 /* v2.0 tunables — v2.3: big_core_guard 80ms→40ms, burst_decay 150ms→80ms */
-unsigned long sysctl_big_core_guard_ns = 40000000UL;  /* 40ms */
-int           sysctl_burst_thresh      = 35;           /* 35% silver_cap */
-unsigned long sysctl_burst_decay_ns    = 80000000UL;  /* 80ms */
+unsigned long sysctl_big_core_guard_ns = 80000000UL;
+int           sysctl_burst_thresh      = 25;
+unsigned long sysctl_burst_decay_ns    = 100000000UL;
 
 
 /* ------------------------------------------------------------------ *
