@@ -18,13 +18,13 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 40;
-int sysctl_cpu_util_thresh   = 85;
-int sysctl_freq_ratio_thresh = 95;
+int sysctl_heavy_task_thresh = 28;
+int sysctl_cpu_util_thresh   = 80;
+int sysctl_freq_ratio_thresh = 90;
 
-unsigned long sysctl_big_core_guard_ns = 60000000UL;
-int           sysctl_burst_thresh      = 35;
-unsigned long sysctl_burst_decay_ns    = 100000000UL;
+unsigned long sysctl_big_core_guard_ns = 100000000UL;
+int           sysctl_burst_thresh      = 25;
+unsigned long sysctl_burst_decay_ns    = 150000000UL;
 
 
 /* ------------------------------------------------------------------ *
@@ -565,7 +565,7 @@ int find_best_silver_cpu(struct task_struct *p)
 		return -1;
 	}
 
-	skip_freq_gate = (task_util_pct < 15);
+	skip_freq_gate = (task_util_pct < 8);
 
 retry:
 	for_each_cpu(i, &ps_silver_online) {
@@ -620,7 +620,7 @@ retry:
 		unsigned long fallback_util_pct;
 
 		fallback_util_pct = ps_cpu_util_pct(best_cpu_fallback);
-		if (fallback_util_pct >= 75)
+		if (fallback_util_pct >= 65)
 			goto miss;
 
 		for_each_cpu(i, cpu_online_mask) {
@@ -634,7 +634,7 @@ retry:
 		}
 
 		if (min_gold_util == ULONG_MAX ||
-		    min_util_fallback <= (min_gold_util * 110 / 100)) {
+		    min_util_fallback <= (min_gold_util * 105 / 100)) {
 			atomic_inc(&ps_hit_count);
 			return best_cpu_fallback;
 		}
