@@ -310,18 +310,6 @@ static int ps_cpu_online_cb(unsigned int cpu)
 	} else {
 		if (cpu_is_silver(cpu)) {
 			cpumask_set_cpu(cpu, &ps_silver_online);
-		} else {
-			unsigned long cur = READ_ONCE(ps_gold_max_freq);
-			unsigned long this_cap = capacity_orig_of(cpu);
-
-			if (!cur || this_cap >= ps_gold_cap) {
-				unsigned long gfreq = cpufreq_quick_get_max(cpu);
-				if (gfreq && gfreq > cur) {
-					WRITE_ONCE(ps_gold_max_freq, gfreq);
-					pr_info("prefer_silver: gold_max_freq=%lukHz via cpu%d online\n",
-						gfreq, cpu);
-				}
-			}
 		}
 	}
 	return 0;
@@ -477,6 +465,9 @@ static inline bool ps_check_bigcore_recency(struct task_struct *p)
 	if (!sysctl_big_core_guard_ns)
 		return true;
 
+	if (READ_ONCE(ps_task_cache[slot].pid) != p->pid)
+		return true;
+
 	last_big = READ_ONCE(ps_task_cache[slot].last_big_ts);
 	if (!last_big)
 		return true;
@@ -492,6 +483,10 @@ static inline bool ps_check_burst_decay(struct task_struct *p)
 	u64 last_burst, now;
 
 	if (!sysctl_burst_decay_ns)
+		return true;
+
+	/* Guard: pastikan slot ini memang milik task ini */
+	if (READ_ONCE(ps_task_cache[slot].pid) != p->pid)
 		return true;
 
 	last_burst = READ_ONCE(ps_task_cache[slot].last_burst_ts);
