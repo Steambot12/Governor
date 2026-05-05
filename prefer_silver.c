@@ -1,40 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * prefer_silver.c v2.3.1
- *
- * Fix v2.0:
- *  - prefer_silver_update_task() dipindah setelah semua static helpers
- *  - Guard 1: uclamp_min > 0 → skip silver
- *  - Guard 2: big-core recency (80ms)
- *  - Guard 3: burst hysteresis (150ms)
- *  - Lower heavy_task_thresh: 75 → 55
- *  - Lower cpu_util_thresh: 90 → 85
- *
- * Fix v2.1:
- *  - ps_gold_max_freq diisi saat detect_cluster_capacity()
- *  - ps_cpu_online_cb refresh ps_gold_max_freq saat gold CPU online
- *  - ps_check_burst_decay lockless (READ_ONCE)
- *
- * Fix v2.2:
- *  - Fix #1: ps_get_task_state() hash collision protection 500ms guard
- *  - Fix #2: ps_task_util_pct() early boot guard ps_detected
- *  - Fix #3: detect_cluster_capacity() ambil gold_max_freq dari prime
- *  - Fix #4: skip_freq_gate threshold 40% → 15%
- *  - Fix #5: find_best_silver_cpu() fallback hard cap 75%
- *
- * Fix v2.3:
- *  - Fix #1 (KRITIS): gold_max_freq selalu 0 karena cpufreq_quick_get_max()
- *    dipanggil di late_initcall sebelum CPUFreq policy siap. Solusi:
- *    tambah CPUFREQ_POLICY_NOTIFIER yang mengisi ps_gold_max_freq saat
- *    CPUFREQ_CREATE_POLICY event. Freq gate kini aktif otomatis.
- *  - Fix #2: big_core_guard_ns default 80ms → 40ms untuk 120fps gaming.
- *  - Fix #3: burst_decay_ns default 150ms → 80ms.
- *  - Fix #4: detect_cluster_capacity() tidak panggil cpufreq_quick_get_max().
- *
- * Fix v2.3.1:
- *  - Fix build error: CPUFREQ_NOTIFY tidak ada di kernel 5.10.
- *    CPUFREQ_POLICY_NOTIFIER hanya punya CPUFREQ_CREATE_POLICY dan
- *    CPUFREQ_REMOVE_POLICY. Hapus cek CPUFREQ_NOTIFY dari notifier handler.
+ * Copyright (C) 2020 Oplus. All rights reserved.
  */
 
 #include <linux/sched.h>
@@ -52,13 +18,12 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 40;   /* task util % relatif silver_cap */
-int sysctl_cpu_util_thresh   = 85;   /* silver CPU util % max */
-int sysctl_freq_ratio_thresh = 95;   /* silver_freq / gold_max_freq % max */
+int sysctl_heavy_task_thresh = 40;
+int sysctl_cpu_util_thresh   = 85;
+int sysctl_freq_ratio_thresh = 95;
 
-/* v2.0 tunables — v2.3: big_core_guard 80ms→40ms, burst_decay 150ms→80ms */
-unsigned long sysctl_big_core_guard_ns = 80000000UL;
-int           sysctl_burst_thresh      = 25;
+unsigned long sysctl_big_core_guard_ns = 60000000UL;
+int           sysctl_burst_thresh      = 35;
 unsigned long sysctl_burst_decay_ns    = 100000000UL;
 
 
@@ -265,7 +230,6 @@ static bool detect_cluster_capacity(void)
 	ps_gold_cap   = (second_cap == ULONG_MAX) ? (min_cap * 2) : second_cap;
 	cpumask_copy(&ps_silver_mask, &tmp_silver_mask);
 
-	/* ps_gold_max_freq diisi oleh ps_cpufreq_policy_nb via notifier */
 
 	update_silver_online();
 
@@ -281,17 +245,7 @@ static bool detect_cluster_capacity(void)
 }
 
 
-/*
- * v2.3 / v2.3.1: CPUFreq policy notifier.
- *
- * Kernel 5.10 CPUFREQ_POLICY_NOTIFIER hanya mengirim dua event:
- *   CPUFREQ_CREATE_POLICY  — policy baru dibuat saat driver init/CPU hotplug
- *   CPUFREQ_REMOVE_POLICY  — policy dihapus
- *
- * CPUFREQ_NOTIFY tidak ada di 5.10 (dihapus sejak kernel 4.x transisi).
- * Notifier ini hanya perlu react ke CPUFREQ_CREATE_POLICY untuk mengisi
- * ps_gold_max_freq dengan cpuinfo.max_freq yang valid.
- */
+
 static int ps_cpufreq_policy_nb_fn(struct notifier_block *nb,
 				   unsigned long event, void *data)
 {
@@ -300,7 +254,6 @@ static int ps_cpufreq_policy_nb_fn(struct notifier_block *nb,
 	unsigned long cur_gold_max;
 	int cpu, prime_cpu = -1;
 
-	/* v2.3.1: hanya CPUFREQ_CREATE_POLICY yang valid di kernel 5.10 */
 	if (event != CPUFREQ_CREATE_POLICY)
 		return NOTIFY_DONE;
 
@@ -806,7 +759,7 @@ int __init prefer_silver_init(void)
 	if (detect_cluster_capacity())
 		atomic_set(&ps_detected, 1);
 	else
-		schedule_delayed_work(&ps_detect_work, msecs_to_jiffies(3000));
+		schedule_delayed_work(&ps_detect_work, msecs_to_jiffies(1500));
 
 	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN,
 					"sched/prefer_silver:online",
@@ -828,7 +781,7 @@ int __init prefer_silver_init(void)
 	}
 	prefer_silver_debugfs_init();
 
-	pr_info("prefer_silver v2.3.1: init OK | enabled=%d heavy=%d%% cpu=%d%% "
+	pr_info("prefer_silver v1.1: init OK | enabled=%d heavy=%d%% cpu=%d%% "
 		"guard=%lums burst_decay=%lums\n",
 		sysctl_prefer_silver,
 		sysctl_heavy_task_thresh,
