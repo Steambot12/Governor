@@ -450,10 +450,10 @@ EXPORT_SYMBOL_GPL(prefer_silver_update_task);
 static inline bool ps_check_uclamp(struct task_struct *p)
 {
 #ifdef CONFIG_UCLAMP_TASK
-	if (uclamp_eff_value(p, UCLAMP_MIN) > 0)
-		return false;
+    if (p->uclamp_req[UCLAMP_MIN].value > 0)
+        return false;
 #endif
-	return true;
+    return true;
 }
 
 
@@ -495,6 +495,32 @@ static inline bool ps_check_burst_decay(struct task_struct *p)
 
 	now = ktime_get_ns();
 	return (now - last_burst) >= sysctl_burst_decay_ns;
+}
+
+
+/* ------------------------------------------------------------------ *
+ * Check functions
+ * ------------------------------------------------------------------ */
+bool prefer_silver_check_freq(int cpu)
+{
+	unsigned long silver_freq = (unsigned long)cpufreq_quick_get(cpu);
+	unsigned long gold_max    = READ_ONCE(ps_gold_max_freq);
+
+	if (!silver_freq || !gold_max)
+		return true;
+	return silver_freq <= (gold_max * sysctl_freq_ratio_thresh / 100);
+}
+
+
+bool prefer_silver_check_cpu_util(int cpu)
+{
+	return ps_cpu_util_pct(cpu) < sysctl_cpu_util_thresh;
+}
+
+
+bool prefer_silver_check_task_util(struct task_struct *p)
+{
+	return ps_task_util_pct(p) < sysctl_heavy_task_thresh;
 }
 
 
@@ -625,32 +651,6 @@ miss:
 	else
 		atomic_inc(&ps_miss_util);
 	return -1;
-}
-
-
-/* ------------------------------------------------------------------ *
- * Check functions
- * ------------------------------------------------------------------ */
-bool prefer_silver_check_freq(int cpu)
-{
-	unsigned long silver_freq = (unsigned long)cpufreq_quick_get(cpu);
-	unsigned long gold_max    = READ_ONCE(ps_gold_max_freq);
-
-	if (!silver_freq || !gold_max)
-		return true;
-	return silver_freq <= (gold_max * sysctl_freq_ratio_thresh / 100);
-}
-
-
-bool prefer_silver_check_cpu_util(int cpu)
-{
-	return ps_cpu_util_pct(cpu) < sysctl_cpu_util_thresh;
-}
-
-
-bool prefer_silver_check_task_util(struct task_struct *p)
-{
-	return ps_task_util_pct(p) < sysctl_heavy_task_thresh;
 }
 
 
