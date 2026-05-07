@@ -1305,10 +1305,6 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, unsigned int window_us,
 	u64 cur_idle, cur_wall;
 	u64 wall_delta, idle_delta;
 	unsigned int filter_shift;
-	bool is_prime = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
-	bool interactive_active;
-	unsigned int idle_win_threshold;
-	unsigned int step;
 
 	filter_shift = rfx_get_adaptive_shift(rfx_c->util, max_cap, base_shift);
 
@@ -1446,18 +1442,38 @@ static inline unsigned int rfx_apply_input_boost(struct rfx_policy *rfx_pol,
 
 /* === PATCH: FRAME VARIANCE DETECTOR === */
 static void rfx_update_frame_variance(struct rfx_policy *rfx_pol,
-				      struct rfx_cpu *rfx_c, u64 time)
+                                       struct rfx_cpu *rfx_c,
+                                       unsigned long max_cap, u64 time)
 {
-	unsigned int avg = 0, variance = 0;
-	int i;
+    unsigned int avg = 0, variance = 0;
+    int i;
 
-	if (!rfx_pol->tunables->frame_pacing_en)
-		return;
-	if (rfx_pol->current_mode != RFX_MODE_GAMING &&
-	    !rfx_pol->in_heavy_mode)
-		return;
+    if (!rfx_pol->tunables->frame_pacing_en || !max_cap)
+        return;
+
+    /* Hitung rata-rata util dari history */
+    for (i = 0; i < 8; i++)
+        avg += rfx_c->util_history[i];
+    avg /= 8;
+
+    /* Hitung variance (mean absolute deviation) */
+    for (i = 0; i < 8; i++) {
+        int diff = (int)rfx_c->util_history[i] - (int)avg;
+        variance += (unsigned int)(diff < 0 ? -diff : diff);
+    }
+
+    rfx_pol->frame_variance_score = variance;
+
+    /* Aktifkan frame floor jika variance tinggi (frame tidak stabil) */
+    if (variance > RFX_FRAME_VARIANCE_THRESH) {
+        rfx_pol->frame_floor_active   = true;
+        rfx_pol->frame_floor_end_ns   = time + RFX_FRAME_BOOST_DURATION_NS;
+    } else if (rfx_pol->frame_floor_active &&
+               time >= rfx_pol->frame_floor_end_ns) {
+        rfx_pol->frame_floor_active   = false;
+        rfx_pol->frame_variance_score = 0;
+    }
 }
-	/* Hitung variance dari util_history[8]
 
 /* === IO WAIT BOOSTING === */
 
