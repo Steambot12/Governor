@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Vorpal CPUFreq Governor v2.0 - Perfect Gaming & Thermal Edition
+ * Vorpal CPUFreq Governor v1.0 - Perfect Gaming & Thermal Edition
  * Based on schedutil — optimized for 120fps gaming & daily use
  * Features: Activity State Machine, Smart Mode Detection, Hispeed Blending,
  *           Gaming Lock & Sustain, Thermal-Aware Cap, Burst Guard,
@@ -28,7 +28,7 @@ extern unsigned int sysctl_sched_latency;
 
 #define CPUFREQ_VORPAL_PROGNAME     "Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR       "Templar Dev"
-#define CPUFREQ_VORPAL_VERSION 		"2.0 - Perfect Gaming & Thermal"
+#define CPUFREQ_VORPAL_VERSION 		"1.0"
 
 /* === RATE LIMITS === */
  
