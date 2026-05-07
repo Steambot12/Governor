@@ -303,7 +303,6 @@ struct rfx_policy;
 
 static void rfx_deferred_update(struct rfx_policy *rfx_pol);
 static void rfx_work(struct kthread_work *work);
-
 struct rfx_policy {
 	struct cpufreq_policy	*policy;
 	struct rfx_tunables	*tunables;
@@ -405,6 +404,11 @@ struct rfx_cpu {
 
 static DEFINE_PER_CPU(struct rfx_cpu, rfx_cpu);
 
+/* PATCH: Frame pacing forward declaration */
+static void rfx_update_frame_variance(struct rfx_policy *rfx_pol,
+                                       struct rfx_cpu *rfx_c,
+                                       unsigned long max_cap, u64 time);
+
 static inline struct rfx_tunables *to_rfx_tunables(struct gov_attr_set *attr_set)
 {
 	return container_of(attr_set, struct rfx_tunables, attr_set);
@@ -428,6 +432,9 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 	/* Update util history */
 	rfx_c->util_history[rfx_c->util_history_idx] = util_pct;
 	rfx_c->util_history_idx = (rfx_c->util_history_idx + 1) & 0x7;
+
+	/* PATCH: Frame pacing variance update */
+	rfx_update_frame_variance(rfx_pol, rfx_c, max_cap, time);
 
 	/* Detect video pattern - periodic medium load */
 	if (medium_load) {
