@@ -18,13 +18,13 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 45;
-int sysctl_cpu_util_thresh   = 70;
-int sysctl_freq_ratio_thresh = 90;
+int sysctl_heavy_task_thresh = 55;
+int sysctl_cpu_util_thresh   = 80;
+int sysctl_freq_ratio_thresh = 85;
 
-unsigned long sysctl_big_core_guard_ns = 50000000UL;
-int           sysctl_burst_thresh      = 25;
-unsigned long sysctl_burst_decay_ns    = 80000000UL;
+unsigned long sysctl_big_core_guard_ns = 25000000UL;
+int           sysctl_burst_thresh      = 35;
+unsigned long sysctl_burst_decay_ns    = 40000000UL;
 
 
 /* ------------------------------------------------------------------ *
