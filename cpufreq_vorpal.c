@@ -409,6 +409,12 @@ static void rfx_update_frame_variance(struct rfx_policy *rfx_pol,
                                        struct rfx_cpu *rfx_c,
                                        unsigned long max_cap, u64 time);
 
+/* PATCH: Input boost forward declaration */
+static inline unsigned int rfx_apply_input_boost(struct rfx_policy *rfx_pol,
+                                                  unsigned int freq,
+                                                  unsigned int max,
+                                                  u64 time);
+
 static inline struct rfx_tunables *to_rfx_tunables(struct gov_attr_set *attr_set)
 {
 	return container_of(attr_set, struct rfx_tunables, attr_set);
@@ -1120,6 +1126,9 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 		freq = policy->cpuinfo.min_freq;
 	}
 
+	/* === PATCH: Input Boost — terapkan floor saat boost aktif === */
+	freq = rfx_apply_input_boost(rfx_pol, freq, max, time);
+
 	/* Freq cap */
 	if (freq_cap_khz > 0) {
 		if (freq > freq_cap_khz)
@@ -1343,12 +1352,15 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, unsigned int window_us,
 			alpha = max(alpha, (unsigned int)RFX_EWMA_ALPHA_GAMING);
 		else if (pol->force_idle || pol->in_light_mode)
 			alpha = min(alpha, (unsigned int)RFX_EWMA_ALPHA_IDLE);
+		/* === PATCH FIX: LITTLE cluster normal mode pakai alpha lebih smooth === */
+		else if (max_cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD)
+			alpha = min(alpha, (unsigned int)128);   /* 0.50 — cukup smooth untuk UI */
 
 		if (raw == 0) {
 			/* Fast decay ke 0 saat benar-benar idle */
 			rfx_c->ewma_raw = rfx_c->ewma_raw * (RFX_EWMA_SCALE - alpha) /
 					   RFX_EWMA_SCALE;
-		} else if (raw > rfx_c->filtered_busy_pct + 5) {
+		} else if (raw > rfx_c->filtered_busy_pct + 15) {
 			/* Spike tiba-tiba: langsung snap tanpa smoothing */
 			rfx_c->ewma_raw            = raw * RFX_EWMA_SCALE;
 		} else {
@@ -1415,10 +1427,12 @@ static unsigned long rfx_blend_util(struct rfx_cpu *rfx_c,
 
 /* === PATCH: INPUT BOOST HELPER === */
 static inline unsigned int rfx_apply_input_boost(struct rfx_policy *rfx_pol,
-						  unsigned int freq,
-						  unsigned long max_cap,
-						  u64 time)
+                                                  unsigned int freq,
+                                                  unsigned int max,
+                                                  u64 time)
 {
+	unsigned long max_cap;
+
 	if (!rfx_pol->tunables->input_boost_en)
 		return freq;
 	if (!rfx_pol->input_boost_active)
@@ -1427,20 +1441,23 @@ static inline unsigned int rfx_apply_input_boost(struct rfx_policy *rfx_pol,
 		rfx_pol->input_boost_active = false;
 		return freq;
 	}
-	/* Terapkan floor berdasar cluster */
+
+	max_cap = arch_scale_cpu_capacity(
+			cpumask_first(rfx_pol->policy->cpus));
+
 	if (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD) {
 		unsigned int floor = rfx_adaptive_floor(rfx_pol->policy,
-							RFX_INPUT_BOOST_PRIME_PCT);
+					RFX_INPUT_BOOST_PRIME_PCT);
 		if (freq < floor)
 			freq = floor;
 	} else if (max_cap > (unsigned long)RFX_LITTLE_CAP_THRESHOLD) {
 		unsigned int floor = rfx_adaptive_floor(rfx_pol->policy,
-							RFX_INPUT_BOOST_BIG_PCT);
+					RFX_INPUT_BOOST_BIG_PCT);
 		if (freq < floor)
 			freq = floor;
 	} else {
 		unsigned int floor = rfx_adaptive_floor(rfx_pol->policy,
-							RFX_INPUT_BOOST_LITTLE_PCT);
+					RFX_INPUT_BOOST_LITTLE_PCT);
 		if (freq < floor)
 			freq = floor;
 	}
@@ -1859,6 +1876,15 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	if (rfx_pol->render_boost_end_ns && time >= rfx_pol->render_boost_end_ns) {
 		rfx_pol->render_urgency_active = false;
 		rfx_pol->render_boost_end_ns = 0;
+		/* === PATCH: Init field baru === */
+		rfx_pol->input_boost_active      = false;
+		rfx_pol->input_boost_end_ns      = 0;
+		rfx_pol->thermal_headroom_margin = 100;   /* 100 = no throttle */
+		rfx_pol->headroom_throttle_active = false;
+		rfx_pol->headroom_soft_cap_pct   = 100;
+		rfx_pol->frame_floor_active      = false;
+		rfx_pol->frame_floor_end_ns      = 0;
+		rfx_pol->frame_variance_score    = 0;
 	}
 
 	rfx_update_next_freq(rfx_pol, time, next_f, force_down);
@@ -2177,10 +2203,20 @@ static struct governor_attr gaming_mode =
 
 RFX_TUNABLE_UINT(hispeed_window_us);
 RFX_TUNABLE_UINT(hispeed_filter_shift);
+/* === PATCH: Declare sysfs handlers untuk tunable baru === */
+RFX_TUNABLE_UINT(ewma_alpha);
+RFX_TUNABLE_UINT(walt_floor_pct);
+RFX_TUNABLE_UINT(input_boost_en);
+RFX_TUNABLE_UINT(thermal_headroom_en);
+RFX_TUNABLE_UINT(frame_pacing_en);
 
 static struct attribute *rfx_little_attrs[] = {
 	&hispeed_boost_pct.attr,
 	&rate_limit_us.attr,
+	&ewma_alpha.attr,           /* PATCH: EWMA tuning */
+	&walt_floor_pct.attr,       /* PATCH: WALT util floor */
+	&input_boost_en.attr,       /* PATCH: Input boost */
+	&frame_pacing_en.attr,      /* PATCH: Frame pacing */
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx_little);
@@ -2191,6 +2227,11 @@ static struct attribute *rfx_big_attrs[] = {
 	&hispeed_filter_shift.attr,
 	&rate_limit_us.attr,
 	&gaming_mode.attr,
+	&ewma_alpha.attr,           /* PATCH */
+	&walt_floor_pct.attr,       /* PATCH */
+	&input_boost_en.attr,       /* PATCH */
+	&thermal_headroom_en.attr,  /* PATCH */
+	&frame_pacing_en.attr,      /* PATCH */
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx_big);
@@ -2202,6 +2243,11 @@ static struct attribute *rfx_prime_attrs[] = {
 	&rate_limit_us.attr,
 	&up_rate_limit_us.attr,
 	&gaming_mode.attr,
+	&ewma_alpha.attr,           /* PATCH */
+	&walt_floor_pct.attr,       /* PATCH */
+	&input_boost_en.attr,       /* PATCH */
+	&thermal_headroom_en.attr,  /* PATCH */
+	&frame_pacing_en.attr,      /* PATCH */
 	NULL
 };
 ATTRIBUTE_GROUPS(rfx_prime);
@@ -2410,6 +2456,12 @@ static int rfx_init(struct cpufreq_policy *policy)
 	tunables->hispeed_filter_shift = CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT;
 	tunables->hispeed_boost_pct    = CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
 	tunables->gaming_mode          = 0;
+	/* === PATCH: Default tunable baru === */
+	tunables->ewma_alpha           = RFX_EWMA_ALPHA_DEFAULT;   /* 154 ≈ 0.60 */
+	tunables->walt_floor_pct       = 0;                         /* off by default, user set via sysfs */
+	tunables->input_boost_en       = 1;                         /* on by default untuk UI responsiveness */
+	tunables->thermal_headroom_en  = 0;                         /* off by default, aktifkan manual */
+	tunables->frame_pacing_en      = 1;                         /* on by default untuk gaming */
 
 	/* Auto-detect ROM tweak level at init */
 	rfx_pol->rom_tweak_detected  = rfx_detect_rom_tweak();
