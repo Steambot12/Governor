@@ -25,10 +25,11 @@
 
 extern int vm_swappiness;
 extern unsigned int sysctl_sched_latency;
+static bool rfx_sysctl_overridden;
 
 #define CPUFREQ_VORPAL_PROGNAME     "Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR       "Templar Dev"
-#define CPUFREQ_VORPAL_VERSION 		"1.0"
+#define CPUFREQ_VORPAL_VERSION 		"1.1"
 
 /* === RATE LIMITS === */
  
@@ -274,6 +275,8 @@ static inline unsigned int rfx_get_ref_freq(struct cpufreq_policy *policy)
 {
 	if (!policy)
 		return 0;
+	if (!max)
+        return policy->cpuinfo.min_freq;
 	return policy->cpuinfo.max_freq;
 }
 
@@ -1431,6 +1434,7 @@ static unsigned long rfx_blend_util(struct rfx_cpu *rfx_c,
 	unsigned int effective_pct;
 	struct rfx_policy *pol = rfx_c->rfx_policy;
 	unsigned long min_blend;
+	unsigned long walt_floor;
 
 	if (!rfx_c->filtered_busy_pct || !rfx_c->hispeed_start_ns) {
 		if (pol->current_mode == RFX_MODE_VIDEO &&
@@ -1811,6 +1815,8 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 
 	if (rfx_pol->interactive_end_ns && time < rfx_pol->interactive_end_ns)
 		act_force = false;
+
+	act_force = rfx_act_update(rfx_c, effective_util, max_cap, time, &freq_cap_khz);
 
 	next_f = rfx_get_next_freq(rfx_pol, effective_util, max_cap,
 				   freq_cap_khz, is_heavy, time);
@@ -2442,6 +2448,31 @@ static void rfx_clear_global_tunables(void)
 
 /* === AUTO ROM DETECTION - Detect ROM sysctl tweaks at governor init === */
 static u8 rfx_detect_rom_tweak(void)
+
+/* === SYSCTL SWEETSPOT OVERRIDE === */
+/*
+ * Apply once per boot, setelah kita baca nilai asli buat ROM detection.
+ * Nilai dipilih cukup konservatif supaya aman di berbagai device:
+ *  - vm_swappiness = 15 : agresif ke RAM, tapi tetap ada swap utk device RAM kecil.
+ *  - sched_latency_ns = 3ms : UI dan gaming lebih responsif tapi tidak terlalu
+ *    agresif untuk big.LITTLE.
+ */
+static void rfx_apply_sysctl_sweetspot(void)
+{
+    if (rfx_sysctl_overridden)
+        return;
+
+    /* Clamp basic range */
+    if (vm_swappiness > 15)
+        vm_swappiness = 15;
+    else if (vm_swappiness < 5)
+        vm_swappiness = 5;
+
+    sysctl_sched_latency = 3000000UL; /* 3ms */
+
+    rfx_sysctl_overridden = true;
+}
+
 {
 	int score = 0;
 
