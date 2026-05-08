@@ -1249,20 +1249,21 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 		return;
 	}
 
-	/* Interactive detection - shorter */
+		/* Interactive detection - shorter */
 	interactive_cond = (util_pct >= RFX_INTERACTIVE_UTIL_PCT);
+	if (interactive_cond) {
 		interactive_dur = is_big
-    	? (rfx_pol->tunables->gaming_mode
-        	? RFX_INTERACTIVE_DURATION_NS
-        	: (800 * NSEC_PER_MSEC))
-    	: (600 * NSEC_PER_MSEC);
-    rfx_pol->interactive_end_ns = time + interactive_dur;
-    if (rfx_pol->in_light_mode) {
-        rfx_pol->in_light_mode     = false;
-        rfx_pol->light_enter_ticks = 0;
-        rfx_pol->force_idle = false;
-    	}
-    	rfx_pol->last_real_update_ns = time;
+			? (rfx_pol->tunables->gaming_mode
+				? RFX_INTERACTIVE_DURATION_NS
+				: (800 * NSEC_PER_MSEC))
+			: (600 * NSEC_PER_MSEC);
+		rfx_pol->interactive_end_ns = time + interactive_dur;
+		if (rfx_pol->in_light_mode) {
+			rfx_pol->in_light_mode     = false;
+			rfx_pol->light_enter_ticks = 0;
+			rfx_pol->force_idle        = false;
+		}
+		rfx_pol->last_real_update_ns = time;
 	}
 
 	if (rfx_pol->interactive_end_ns && time < rfx_pol->interactive_end_ns) {
