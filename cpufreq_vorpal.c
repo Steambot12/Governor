@@ -157,8 +157,8 @@ static bool rfx_sysctl_overridden;
 
 /* === WALT UTIL FLOOR === */
 /* Floor persen dari max_cap saat gaming mode aktif */
-#define RFX_WALT_FLOOR_GAMING_PCT       45    /* Prime: jangan turun di bawah 45% saat gaming */
-#define RFX_WALT_FLOOR_BIG_PCT          30    /* BIG: floor 30% saat gaming */
+#define RFX_WALT_FLOOR_GAMING_PCT       50    /* Prime: jangan turun di bawah 45% saat gaming */
+#define RFX_WALT_FLOOR_BIG_PCT          35    /* BIG: floor 30% saat gaming */
 #define RFX_WALT_FLOOR_DEFAULT_PCT      0     /* Normal mode: tidak ada floor */
 
 /* === INPUT BOOST === */
