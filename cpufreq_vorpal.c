@@ -1364,10 +1364,10 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, unsigned int window_us,
 			/* Spike tiba-tiba: langsung snap tanpa smoothing */
 			rfx_c->ewma_raw            = raw * RFX_EWMA_SCALE;
 		} else {
-			/* EWMA standar: new = alpha*sample + (1-alpha)*old */
-			rfx_c->ewma_raw = alpha * raw * RFX_EWMA_SCALE / RFX_EWMA_SCALE +
-					   (RFX_EWMA_SCALE - alpha) * rfx_c->ewma_raw /
-					   RFX_EWMA_SCALE;
+			/* EWMA standar Q8: new = alpha*raw + (1-alpha)*old */
+			rfx_c->ewma_raw = (alpha * raw +
+					   (RFX_EWMA_SCALE - alpha) *
+					   (rfx_c->ewma_raw / RFX_EWMA_SCALE));
 		}
 		rfx_c->filtered_busy_pct = rfx_c->ewma_raw / RFX_EWMA_SCALE;
 		rfx_c->ewma_util_pct     = rfx_c->filtered_busy_pct;
@@ -1662,7 +1662,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned int         cached_freq = rfx_pol->cached_raw_freq;
 	unsigned long        max_cap, boost, effective_util;
 	unsigned int         next_f, freq_cap_khz = 0;
-	bool                 force_down, act_force, nohz_drop = false;
+	bool                 force_down, act_force = false, nohz_drop = false;
 	bool                 hold, is_heavy;
 	unsigned int         cur_pct;
 	unsigned int         gf;
@@ -1876,15 +1876,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	if (rfx_pol->render_boost_end_ns && time >= rfx_pol->render_boost_end_ns) {
 		rfx_pol->render_urgency_active = false;
 		rfx_pol->render_boost_end_ns = 0;
-		/* === PATCH: Init field baru === */
-		rfx_pol->input_boost_active      = false;
-		rfx_pol->input_boost_end_ns      = 0;
-		rfx_pol->thermal_headroom_margin = 100;   /* 100 = no throttle */
-		rfx_pol->headroom_throttle_active = false;
-		rfx_pol->headroom_soft_cap_pct   = 100;
-		rfx_pol->frame_floor_active      = false;
-		rfx_pol->frame_floor_end_ns      = 0;
-		rfx_pol->frame_variance_score    = 0;
 	}
 
 	rfx_update_next_freq(rfx_pol, time, next_f, force_down);
@@ -2605,6 +2596,14 @@ static int rfx_start(struct cpufreq_policy *policy)
 	rfx_pol->thermal_duty_last_active_ns   = 0;
 	rfx_pol->render_urgency_active = false;
 	rfx_pol->render_boost_end_ns   = 0;
+	rfx_pol->input_boost_active      = false;
+	rfx_pol->input_boost_end_ns      = 0;
+	rfx_pol->thermal_headroom_margin = 100;   /* 100 = no throttle */
+	rfx_pol->headroom_throttle_active = false;
+	rfx_pol->headroom_soft_cap_pct   = 100;
+	rfx_pol->frame_floor_active      = false;
+	rfx_pol->frame_floor_end_ns      = 0;
+	rfx_pol->frame_variance_score    = 0;
 
 	uu = policy_is_shared(policy) ? rfx_update_shared : rfx_update_single_freq;
 
