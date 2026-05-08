@@ -273,11 +273,9 @@ static inline bool rfx_cpu_uclamp_capped(unsigned int cpu) { return false; }
 
 static inline unsigned int rfx_get_ref_freq(struct cpufreq_policy *policy)
 {
-	if (!policy)
-		return 0;
-	if (!max)
-        return policy->cpuinfo.min_freq;
-	return policy->cpuinfo.max_freq;
+    if (!policy)
+        return 0;
+    return policy->cpuinfo.max_freq;
 }
 
 static inline struct gov_attr_set *rfx_to_gov_attr_set(struct kobject *kobj)
@@ -971,10 +969,13 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	bool is_prime  = (max >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 	unsigned int hispeed_pct;
 
-	if (!policy)
-		return 0;
+    if (!policy)
+        return 0;
 
-	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
+    if (!max)
+        return policy->cpuinfo.min_freq;
+
+    hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	util        = rfx_apply_headroom(util, max, is_heavy, rfx_pol->current_mode);
 	freq        = rfx_get_ref_freq(policy);
 	freq        = (unsigned int)((u64)freq * util / max);
@@ -2448,21 +2449,38 @@ static void rfx_clear_global_tunables(void)
 
 /* === AUTO ROM DETECTION - Detect ROM sysctl tweaks at governor init === */
 static u8 rfx_detect_rom_tweak(void)
+{
+    int score = 0;
+
+    /* vm.swappiness: lower = more aggressively tuned ROM */
+    if (vm_swappiness <= 5)
+        score += 3;
+    else if (vm_swappiness <= 15)
+        score += 2;
+    else if (vm_swappiness <= 30)
+        score += 1;
+
+    /* sched_latency_ns: lower = ROM tuned scheduler for low latency */
+    if (sysctl_sched_latency <= 1000000UL)        /* <= 1ms */
+        score += 3;
+    else if (sysctl_sched_latency <= 3000000UL)   /* <= 3ms */
+        score += 2;
+    else if (sysctl_sched_latency <= 5000000UL)   /* <= 5ms */
+        score += 1;
+
+    if (score >= 5)
+        return 2;
+    else if (score >= 2)
+        return 1; /* light tweak */
+    return 0;     /* stock ROM */
+}
 
 /* === SYSCTL SWEETSPOT OVERRIDE === */
-/*
- * Apply once per boot, setelah kita baca nilai asli buat ROM detection.
- * Nilai dipilih cukup konservatif supaya aman di berbagai device:
- *  - vm_swappiness = 15 : agresif ke RAM, tapi tetap ada swap utk device RAM kecil.
- *  - sched_latency_ns = 3ms : UI dan gaming lebih responsif tapi tidak terlalu
- *    agresif untuk big.LITTLE.
- */
 static void rfx_apply_sysctl_sweetspot(void)
 {
     if (rfx_sysctl_overridden)
         return;
 
-    /* Clamp basic range */
     if (vm_swappiness > 15)
         vm_swappiness = 15;
     else if (vm_swappiness < 5)
@@ -2471,32 +2489,6 @@ static void rfx_apply_sysctl_sweetspot(void)
     sysctl_sched_latency = 3000000UL; /* 3ms */
 
     rfx_sysctl_overridden = true;
-}
-
-{
-	int score = 0;
-
-	/* vm.swappiness: lower = more aggressively tuned ROM */
-	if (vm_swappiness <= 5)
-		score += 3;
-	else if (vm_swappiness <= 15)
-		score += 2;
-	else if (vm_swappiness <= 30)
-		score += 1;
-
-	/* sched_latency_ns: lower = ROM tuned scheduler for low latency */
-	if (sysctl_sched_latency <= 1000000UL)        /* <= 1ms */
-		score += 3;
-	else if (sysctl_sched_latency <= 3000000UL)   /* <= 3ms */
-		score += 2;
-	else if (sysctl_sched_latency <= 5000000UL)   /* <= 5ms */
-		score += 1;
-
-	if (score >= 5)
-		return 2;
-	else if (score >= 2)
-		return 1; /* light tweak */
-	return 0;   /* stock ROM */
 }
 
 /* === GOVERNOR INIT === */
@@ -2566,11 +2558,14 @@ static int rfx_init(struct cpufreq_policy *policy)
 	tunables->frame_pacing_en      = 1;
 
 	/* Auto-detect ROM tweak level at init */
-	rfx_pol->rom_tweak_detected  = rfx_detect_rom_tweak();
-	rfx_pol->rom_override_active = (rfx_pol->rom_tweak_detected > 0);
-	if (rfx_pol->rom_override_active)
-		pr_info("vorpal: ROM tweak detected (level %u), governor override active\n",
-			rfx_pol->rom_tweak_detected);
+    rfx_pol->rom_tweak_detected  = rfx_detect_rom_tweak();
+    rfx_pol->rom_override_active = (rfx_pol->rom_tweak_detected > 0);
+    if (rfx_pol->rom_override_active)
+        pr_info("vorpal: ROM tweak detected (level %u), governor override active\n",
+                rfx_pol->rom_tweak_detected);
+
+    /* Override sysctl ke sweetspot universal sekali per boot */
+    rfx_apply_sysctl_sweetspot();
 
 	if (max_cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD) {
 		tunables->cluster_type       = RFX_CLUSTER_LITTLE;
