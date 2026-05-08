@@ -450,7 +450,7 @@ EXPORT_SYMBOL_GPL(prefer_silver_update_task);
 static inline bool ps_check_uclamp(struct task_struct *p)
 {
 #ifdef CONFIG_UCLAMP_TASK
-    if (p->uclamp_req[UCLAMP_MIN].value > 0)
+    if (uclamp_eff_value(p, UCLAMP_MIN) > 0)
         return false;
 #endif
     return true;
@@ -459,42 +459,49 @@ static inline bool ps_check_uclamp(struct task_struct *p)
 
 static inline bool ps_check_bigcore_recency(struct task_struct *p)
 {
-	unsigned int slot = PS_TASK_HASH(p->pid);
-	u64 last_big, now;
+    unsigned int slot = PS_TASK_HASH(p->pid);
+    u64 last_big, now;
+    unsigned long guard_ns;
 
-	if (!sysctl_big_core_guard_ns)
-		return true;
+    if (!sysctl_big_core_guard_ns)
+        return true;
 
-	if (READ_ONCE(ps_task_cache[slot].pid) != p->pid)
-		return true;
+    if (READ_ONCE(ps_task_cache[slot].pid) != p->pid)
+        return true;
 
-	last_big = READ_ONCE(ps_task_cache[slot].last_big_ts);
-	if (!last_big)
-		return true;
+    last_big = READ_ONCE(ps_task_cache[slot].last_big_ts);
+    if (!last_big)
+        return true;
 
-	now = ktime_get_ns();
-	return (now - last_big) >= sysctl_big_core_guard_ns;
+    now = ktime_get_ns();
+
+    guard_ns = max(sysctl_big_core_guard_ns, 40000000UL);
+
+    return (now - last_big) >= guard_ns;
 }
 
 
 static inline bool ps_check_burst_decay(struct task_struct *p)
 {
-	unsigned int slot = PS_TASK_HASH(p->pid);
-	u64 last_burst, now;
+    unsigned int slot = PS_TASK_HASH(p->pid);
+    u64 last_burst, now;
+    unsigned long decay_ns;
 
-	if (!sysctl_burst_decay_ns)
-		return true;
+    if (!sysctl_burst_decay_ns)
+        return true;
 
-	/* Guard: pastikan slot ini memang milik task ini */
-	if (READ_ONCE(ps_task_cache[slot].pid) != p->pid)
-		return true;
+    if (READ_ONCE(ps_task_cache[slot].pid) != p->pid)
+        return true;
 
-	last_burst = READ_ONCE(ps_task_cache[slot].last_burst_ts);
-	if (!last_burst)
-		return true;
+    last_burst = READ_ONCE(ps_task_cache[slot].last_burst_ts);
+    if (!last_burst)
+        return true;
 
-	now = ktime_get_ns();
-	return (now - last_burst) >= sysctl_burst_decay_ns;
+    now = ktime_get_ns();
+
+    decay_ns = max(sysctl_burst_decay_ns, 80000000UL);
+
+    return (now - last_burst) >= decay_ns;
 }
 
 
@@ -537,6 +544,10 @@ int find_best_silver_cpu(struct task_struct *p)
 	bool freq_fallback = false;
 	unsigned long task_util_pct;
 	bool skip_freq_gate;
+	int heavy  = clamp(sysctl_heavy_task_thresh,  1, 100);
+	int cpu_th = clamp(sysctl_cpu_util_thresh,    1, 100);
+	int freq_th= clamp(sysctl_freq_ratio_thresh,  1, 100);
+	int burst  = clamp(sysctl_burst_thresh,       1, 100);
 
 	if (!sysctl_prefer_silver)
 		return -1;
