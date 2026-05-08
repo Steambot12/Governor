@@ -18,7 +18,7 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 60;
+int sysctl_heavy_task_thresh = 55;
 int sysctl_cpu_util_thresh   = 80;
 int sysctl_freq_ratio_thresh = 85;
 
@@ -434,9 +434,10 @@ void prefer_silver_update_task(struct task_struct *p, int cpu)
 		s->peak_util = util;
 
 	if (ps_silver_cap) {
-		unsigned long burst_pct = (util * 100) / ps_silver_cap;
-		if ((int)burst_pct >= sysctl_burst_thresh)
-			s->last_burst_ts = now;
+    int burst_th = clamp(sysctl_burst_thresh, 1, 100);
+    unsigned long burst_pct = (util * 100) / ps_silver_cap;
+    if ((int)burst_pct >= burst_th)
+        s->last_burst_ts = now;
 	}
 
 	spin_unlock_irqrestore(&ps_task_lock, flags);
@@ -510,24 +511,26 @@ static inline bool ps_check_burst_decay(struct task_struct *p)
  * ------------------------------------------------------------------ */
 bool prefer_silver_check_freq(int cpu)
 {
-	unsigned long silver_freq = (unsigned long)cpufreq_quick_get(cpu);
-	unsigned long gold_max    = READ_ONCE(ps_gold_max_freq);
+    unsigned long silver_freq = (unsigned long)cpufreq_quick_get(cpu);
+    unsigned long gold_max    = READ_ONCE(ps_gold_max_freq);
+    int freq_th = clamp(sysctl_freq_ratio_thresh, 1, 100);
 
-	if (!silver_freq || !gold_max)
-		return true;
-	return silver_freq <= (gold_max * sysctl_freq_ratio_thresh / 100);
+    if (!silver_freq || !gold_max)
+        return true;
+    return silver_freq <= (gold_max * freq_th / 100);
 }
 
 
 bool prefer_silver_check_cpu_util(int cpu)
 {
-	return ps_cpu_util_pct(cpu) < sysctl_cpu_util_thresh;
+    int cpu_th = clamp(sysctl_cpu_util_thresh, 1, 100);
+    return ps_cpu_util_pct(cpu) < cpu_th;
 }
-
 
 bool prefer_silver_check_task_util(struct task_struct *p)
 {
-	return ps_task_util_pct(p) < sysctl_heavy_task_thresh;
+    int heavy = clamp(sysctl_heavy_task_thresh, 1, 100);
+    return ps_task_util_pct(p) < heavy;
 }
 
 
@@ -544,10 +547,6 @@ int find_best_silver_cpu(struct task_struct *p)
 	bool freq_fallback = false;
 	unsigned long task_util_pct;
 	bool skip_freq_gate;
-	int heavy  = clamp(sysctl_heavy_task_thresh,  1, 100);
-	int cpu_th = clamp(sysctl_cpu_util_thresh,    1, 100);
-	int freq_th= clamp(sysctl_freq_ratio_thresh,  1, 100);
-	int burst  = clamp(sysctl_burst_thresh,       1, 100);
 
 	if (!sysctl_prefer_silver)
 		return -1;
