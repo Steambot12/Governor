@@ -34,7 +34,7 @@ extern unsigned int sysctl_sched_latency;
  
 /* UI Animation protection */
 #define RFX_UI_IDLE_PROTECTION_NS   (25 * NSEC_PER_MSEC)
-#define RFX_LITTLE_INTERACTIVE_FLOOR_KHZ  768000
+#define RFX_LITTLE_INTERACTIVE_FLOOR_KHZ  900000
 #define RFX_GAME_LAUNCH_BOOST_NS   (15000 * NSEC_PER_MSEC)
 
 /* BIG cluster rate limits */
@@ -683,22 +683,26 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 		break;
 
 	case RFX_ACT_LIGHT:
-		if (effective_util > light_up_th) {
-			rfx_c->act_up_ticks++;
-			if (rfx_c->act_up_ticks >= RFX_ACT_UP_TICKS) {
-				rfx_c->act_state    = RFX_ACT_MEDIUM;
-				rfx_c->act_up_ticks = 0;
-			}
-		} else if (effective_util < light_dn_th) {
-			rfx_c->act_down_ticks++;
-			if (rfx_c->act_down_ticks >= RFX_ACT_DOWN_TICKS) {
-				rfx_c->act_state      = RFX_ACT_IDLE;
-				rfx_c->act_down_ticks = 0;
-				force_down = true;
-			}
-		}
-		*freq_cap_khz = RFX_LITTLE_LIGHT_MAX_FREQ_KHZ;
-		break;
+    if (effective_util > light_up_th) {
+        rfx_c->act_up_ticks++;
+        if (rfx_c->act_up_ticks >= RFX_ACT_UP_TICKS) {
+            rfx_c->act_state    = RFX_ACT_MEDIUM;
+            rfx_c->act_up_ticks = 0;
+        }
+    } else if (effective_util < light_dn_th) {
+        rfx_c->act_down_ticks++;
+        if (rfx_c->act_down_ticks >= RFX_ACT_DOWN_TICKS) {
+            rfx_c->act_state      = RFX_ACT_IDLE;
+            rfx_c->act_down_ticks = 0;
+            force_down = true;
+        }
+    }
+  
+    if (rfx_pol->interactive_end_ns && time < rfx_pol->interactive_end_ns)
+        *freq_cap_khz = 0;
+    else
+        *freq_cap_khz = RFX_LITTLE_LIGHT_MAX_FREQ_KHZ;
+    break;
 
 	case RFX_ACT_MEDIUM:
 		if (effective_util > med_up_th) {
@@ -979,7 +983,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	if (is_little && !rfx_pol->in_heavy_mode &&
     	!rfx_pol->tunables->gaming_mode &&
     	!(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
-    	unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 53);
+    	unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 72);
 	if (freq > little_nongaming_cap)
     	freq = little_nongaming_cap;
 	}
@@ -1247,8 +1251,8 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	interactive_cond = (util_pct >= RFX_INTERACTIVE_UTIL_PCT);
 	if (interactive_cond) {
     	u64 interactive_dur = is_big
-        	? RFX_INTERACTIVE_DURATION_NS
-        	: (500 * NSEC_PER_MSEC);
+    		? RFX_INTERACTIVE_DURATION_NS
+    		: (1200 * NSEC_PER_MSEC);
     	rfx_pol->interactive_end_ns = time + interactive_dur;
     if (rfx_pol->in_light_mode) {
         rfx_pol->in_light_mode     = false;
@@ -1357,9 +1361,8 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, unsigned int window_us,
 			alpha = min(alpha, (unsigned int)128);   /* 0.50 — cukup smooth untuk UI */
 
 		if (raw == 0) {
-			/* Fast decay ke 0 saat benar-benar idle */
-			rfx_c->ewma_raw = rfx_c->ewma_raw * (RFX_EWMA_SCALE - alpha) /
-					   RFX_EWMA_SCALE;
+    		rfx_c->ewma_raw = rfx_c->ewma_raw * 230 / RFX_EWMA_SCALE;
+		}
 		} else if (raw > rfx_c->filtered_busy_pct + 15) {
 			/* Spike tiba-tiba: langsung snap tanpa smoothing */
 			rfx_c->ewma_raw            = raw * RFX_EWMA_SCALE;
@@ -1415,7 +1418,8 @@ static unsigned long rfx_blend_util(struct rfx_cpu *rfx_c,
 
 		/* PATCH: WALT Util Floor — jangan drop di bawah floor saat gaming */
 		if (pol->tunables->walt_floor_pct > 0 &&
-		    (pol->current_mode == RFX_MODE_GAMING || pol->in_heavy_mode)) {
+    		(pol->current_mode == RFX_MODE_GAMING || pol->in_heavy_mode ||
+     			(pol->interactive_end_ns && time < pol->interactive_end_ns))) {
 			unsigned long walt_floor = max_cap *
 						   pol->tunables->walt_floor_pct / 100;
 			if (blended < walt_floor)
@@ -2447,12 +2451,11 @@ static int rfx_init(struct cpufreq_policy *policy)
 	tunables->hispeed_filter_shift = CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT;
 	tunables->hispeed_boost_pct    = CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
 	tunables->gaming_mode          = 0;
-	/* === PATCH: Default tunable baru === */
-	tunables->ewma_alpha           = RFX_EWMA_ALPHA_DEFAULT;   /* 154 ≈ 0.60 */
-	tunables->walt_floor_pct       = 0;                         /* off by default, user set via sysfs */
-	tunables->input_boost_en       = 1;                         /* on by default untuk UI responsiveness */
-	tunables->thermal_headroom_en  = 0;                         /* off by default, aktifkan manual */
-	tunables->frame_pacing_en      = 1;                         /* on by default untuk gaming */
+	tunables->ewma_alpha           = RFX_EWMA_ALPHA_DEFAULT;
+	tunables->walt_floor_pct       = 25;
+	tunables->input_boost_en       = 1;
+	tunables->thermal_headroom_en  = 0;
+	tunables->frame_pacing_en      = 1;
 
 	/* Auto-detect ROM tweak level at init */
 	rfx_pol->rom_tweak_detected  = rfx_detect_rom_tweak();
