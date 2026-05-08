@@ -25,7 +25,10 @@
 
 extern int vm_swappiness;
 extern unsigned int sysctl_sched_latency;
+extern int sysctl_prefer_silver;
 static bool rfx_sysctl_overridden;
+
+static int rfx_saved_prefer_silver = -1;
 
 #define CPUFREQ_VORPAL_PROGNAME     "Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR       "Templar Dev"
@@ -102,8 +105,8 @@ static bool rfx_sysctl_overridden;
 #define RFX_GAMING_MAX_PCT              90
 #define RFX_BIG_GAMING_MAX_PCT          88
 #define RFX_PRIME_GAMING_FLOOR_PCT      82
-#define RFX_GAME_LAUNCH_FLOOR_PCT       65
-#define RFX_BIG_GAMING_FLOOR_PCT        55
+#define RFX_GAME_LAUNCH_FLOOR_PCT       72
+#define RFX_BIG_GAMING_FLOOR_PCT        60
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
@@ -150,21 +153,21 @@ static bool rfx_sysctl_overridden;
 
 /* === EWMA LOAD SMOOTHING === */
 /* Alpha dalam fixed-point Q8: 204 ≈ 0.80, 128 ≈ 0.50, 77 ≈ 0.30 */
-#define RFX_EWMA_ALPHA_DEFAULT          154   /* ≈ 0.60 — balance responsif vs smooth */
+#define RFX_EWMA_ALPHA_DEFAULT          179   /* ≈ 0.60 — balance responsif vs smooth */
 #define RFX_EWMA_ALPHA_GAMING           204   /* ≈ 0.80 — lebih reaktif saat gaming */
 #define RFX_EWMA_ALPHA_IDLE             77    /* ≈ 0.30 — sangat smooth saat idle */
 #define RFX_EWMA_SCALE                  256   /* Q8 fixed-point denominator */
 
 /* === WALT UTIL FLOOR === */
 /* Floor persen dari max_cap saat gaming mode aktif */
-#define RFX_WALT_FLOOR_GAMING_PCT       50    /* Prime: jangan turun di bawah 45% saat gaming */
-#define RFX_WALT_FLOOR_BIG_PCT          35    /* BIG: floor 30% saat gaming */
+#define RFX_WALT_FLOOR_GAMING_PCT       55    /* Prime: jangan turun di bawah 45% saat gaming */
+#define RFX_WALT_FLOOR_BIG_PCT          40    /* BIG: floor 30% saat gaming */
 #define RFX_WALT_FLOOR_DEFAULT_PCT      0     /* Normal mode: tidak ada floor */
 
 /* === INPUT BOOST === */
-#define RFX_INPUT_BOOST_DURATION_NS     (80 * NSEC_PER_MSEC)   /* 80ms boost */
-#define RFX_INPUT_BOOST_PRIME_PCT       78    /* Prime boost ke 78% saat input */
-#define RFX_INPUT_BOOST_BIG_PCT         60    /* BIG boost ke 60% saat input */
+#define RFX_INPUT_BOOST_DURATION_NS     (150 * NSEC_PER_MSEC)
+#define RFX_INPUT_BOOST_PRIME_PCT       82    /* Prime boost ke 82% saat input */
+#define RFX_INPUT_BOOST_BIG_PCT         65    /* BIG boost ke 65% saat input */
 #define RFX_INPUT_BOOST_LITTLE_PCT      55    /* LITTLE boost ke 55% saat input */
 
 /* === THERMAL HEADROOM SOFT THROTTLE === */
@@ -175,10 +178,10 @@ static bool rfx_sysctl_overridden;
 #define RFX_THERMAL_THROTTLE_HARD_PCT   82    /* Hard cap saat headroom rendah */
 
 /* === FRAME PACING FLOOR === */
-#define RFX_FRAME_VARIANCE_THRESH       45    /* Variance di atas ini = frame tidak stabil */
-#define RFX_FRAME_FLOOR_PRIME_PCT       62    /* Floor Prime saat frame variance tinggi */
+#define RFX_FRAME_VARIANCE_THRESH       35    /* Variance di atas ini = frame tidak stabil */
+#define RFX_FRAME_FLOOR_PRIME_PCT       68    /* Floor Prime saat frame variance tinggi */
 #define RFX_FRAME_FLOOR_BIG_PCT         45    /* Floor BIG saat frame variance tinggi */
-#define RFX_FRAME_BOOST_DURATION_NS     (80 * NSEC_PER_MSEC)
+#define RFX_FRAME_BOOST_DURATION_NS     (120 * NSEC_PER_MSEC)
 
 /* === CLUSTER THRESHOLDS === */
 
@@ -759,6 +762,9 @@ static unsigned int rfx_get_adaptive_shift(unsigned long util,
 
 static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 {
+	if (rfx_pol->tunables->gaming_mode)
+        return;
+
 	u64 time_since_gaming;
 	u64 window_elapsed;
 	u64 effective_window;
@@ -1472,7 +1478,7 @@ static unsigned long rfx_blend_util(struct rfx_cpu *rfx_c,
             unsigned int floor_pct = pol->tunables->walt_floor_pct;
 
             if (pol->tunables->gaming_mode && floor_pct < 60)
-                floor_pct += 5; /* sedikit lebih agresif saat gaming_mode=1 */
+                floor_pct += 5;
 
             if (floor_pct > 95)
                 floor_pct = 95;
@@ -1936,15 +1942,18 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 
 	/* TUNED: Game launch boost */
 	if (!rfx_pol->prev_heavy_mode && rfx_pol->in_heavy_mode &&
-	    !rfx_pol->game_launching &&
-		rfx_pol->current_mode == RFX_MODE_GAMING) {
-		rfx_pol->game_launching     = true;
-		rfx_pol->game_launch_end_ns = time + RFX_GAME_LAUNCH_BOOST_NS;
+    	!rfx_pol->game_launching &&
+    	rfx_pol->current_mode == RFX_MODE_GAMING) {
+    	rfx_pol->game_launching     = true;
+    	rfx_pol->game_launch_end_ns = time + RFX_GAME_LAUNCH_BOOST_NS;
 	}
-	if (rfx_pol->game_launching && rfx_pol->game_launch_end_ns &&
-	    time >= rfx_pol->game_launch_end_ns) {
-		rfx_pol->game_launching     = false;
-		rfx_pol->game_launch_end_ns = 0;
+
+	if (rfx_pol->game_launching &&
+    	rfx_pol->current_mode == RFX_MODE_GAMING) {
+    	rfx_pol->in_light_mode     = false;
+    	rfx_pol->force_idle        = false;
+    	rfx_pol->light_enter_ticks = 0;
+    	rfx_pol->last_real_update_ns = time;
 	}
 
 	/* TUNED: Cleanup render urgency */
@@ -2243,30 +2252,42 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 	if (val > 1)
 		return -EINVAL;
 
-	t->gaming_mode = val;
+	    t->gaming_mode = val;
 
-	if (!val) {
-    	list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
-        	rfx_pol->gaming_lock_end_ns      = 0;
-        	rfx_pol->current_mode            = RFX_MODE_NORMAL;
-        	rfx_pol->in_heavy_mode           = false;
-        	rfx_pol->in_light_mode           = false;
-        	rfx_pol->force_idle              = false;
-        	rfx_pol->need_freq_update        = true;
-        	rfx_pol->mode_switch_time_ns     = ktime_get_ns();
-        	rfx_pol->game_launching          = false;
-        	rfx_pol->game_launch_end_ns      = 0;
-        	rfx_pol->prime_gaming_floor_active = false;
-        	rfx_pol->prime_gaming_floor_end_ns = 0;
-        	rfx_pol->render_urgency_active   = false;
-        	rfx_pol->render_boost_end_ns     = 0;
-			rfx_pol->thermal_throttle_active = false;
-    		rfx_pol->thermal_throttle_end_ns = 0;
-    		rfx_pol->thermal_sustain_window_count = 0;
-    		rfx_pol->thermal_duty_window_start_ns = 0;
-    	}
-	}
-	return count;
+    list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
+        if (val) {
+            
+            if (rfx_saved_prefer_silver < 0)
+                rfx_saved_prefer_silver = sysctl_prefer_silver;
+            sysctl_prefer_silver = 0;
+        } else {
+            /* gaming_mode = 0: reset state + kembalikan prefer_silver */
+            rfx_pol->gaming_lock_end_ns      = 0;
+            rfx_pol->current_mode            = RFX_MODE_NORMAL;
+            rfx_pol->in_heavy_mode           = false;
+            rfx_pol->in_light_mode           = false;
+            rfx_pol->force_idle              = false;
+            rfx_pol->need_freq_update        = true;
+            rfx_pol->mode_switch_time_ns     = ktime_get_ns();
+            rfx_pol->game_launching          = false;
+            rfx_pol->game_launch_end_ns      = 0;
+            rfx_pol->prime_gaming_floor_active = false;
+            rfx_pol->prime_gaming_floor_end_ns = 0;
+            rfx_pol->render_urgency_active   = false;
+            rfx_pol->render_boost_end_ns     = 0;
+            rfx_pol->thermal_throttle_active = false;
+            rfx_pol->thermal_throttle_end_ns = 0;
+            rfx_pol->thermal_sustain_window_count = 0;
+            rfx_pol->thermal_duty_window_start_ns = 0;
+
+            if (rfx_saved_prefer_silver >= 0) {
+                sysctl_prefer_silver = rfx_saved_prefer_silver;
+                rfx_saved_prefer_silver = -1;
+            }
+        }
+    }
+
+    return count;
 }
 static struct governor_attr gaming_mode =
 	__ATTR(gaming_mode, 0644, gaming_mode_show, gaming_mode_store);
@@ -2547,11 +2568,11 @@ static int rfx_init(struct cpufreq_policy *policy)
 	tunables->ewma_alpha           = RFX_EWMA_ALPHA_DEFAULT;
 
 	if (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD)
-    tunables->walt_floor_pct = RFX_WALT_FLOOR_GAMING_PCT;
+    	tunables->walt_floor_pct = RFX_WALT_FLOOR_GAMING_PCT;
 	else if (max_cap > (unsigned long)RFX_LITTLE_CAP_THRESHOLD)
-    tunables->walt_floor_pct = RFX_WALT_FLOOR_BIG_PCT;
+    	tunables->walt_floor_pct = RFX_WALT_FLOOR_BIG_PCT;
 	else
-    tunables->walt_floor_pct = RFX_WALT_FLOOR_DEFAULT_PCT;
+    	tunables->walt_floor_pct = RFX_WALT_FLOOR_DEFAULT_PCT;
 
 	tunables->input_boost_en       = 1;
 	tunables->thermal_headroom_en  = 0;
