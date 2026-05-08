@@ -762,49 +762,51 @@ static unsigned int rfx_get_adaptive_shift(unsigned long util,
 
 static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 {
-	if (rfx_pol->tunables->gaming_mode)
+    u64 time_since_gaming;
+    u64 window_elapsed;
+    u64 effective_window;
+
+    if (rfx_pol->tunables->gaming_mode)
         return;
 
-	u64 time_since_gaming;
-	u64 window_elapsed;
-	u64 effective_window;
+    if (!rfx_pol->in_heavy_mode ||
+        rfx_pol->current_mode != RFX_MODE_GAMING)
+        return;
 
-	if (!rfx_pol->in_heavy_mode ||
-	    rfx_pol->current_mode != RFX_MODE_GAMING)
-		return;
+    if (!rfx_pol->thermal_duty_window_start_ns) {
+        rfx_pol->thermal_duty_window_start_ns = time;
+    }
 
-	if (!rfx_pol->thermal_duty_window_start_ns)
-		rfx_pol->thermal_duty_window_start_ns = time;
+    time_since_gaming = time - rfx_pol->mode_switch_time_ns;
 
-	time_since_gaming = time - rfx_pol->mode_switch_time_ns;
+    if (time_since_gaming < (3000 * NSEC_PER_MSEC)) {
+        rfx_pol->thermal_throttle_active = false;
+        return;
+    }
 
-	if (time_since_gaming < (3000 * NSEC_PER_MSEC)) {
-    	rfx_pol->thermal_throttle_active = false;
-    	return;
-	}
+    if (rfx_pol->thermal_throttle_active) {
+        if (time >= rfx_pol->thermal_throttle_end_ns) {
+            rfx_pol->thermal_throttle_active = false;
+            rfx_pol->thermal_duty_window_start_ns = time;
+            rfx_pol->thermal_sustain_window_count++;
+            if (rfx_pol->thermal_sustain_window_count > 6)
+                rfx_pol->thermal_sustain_window_count = 6;
+            rfx_pol->thermal_duty_last_active_ns = time;
+        }
+        return;
+    }
 
-	if (rfx_pol->thermal_throttle_active) {
-		if (time >= rfx_pol->thermal_throttle_end_ns) {
-			rfx_pol->thermal_throttle_active = false;
-			rfx_pol->thermal_duty_window_start_ns = time;
-			rfx_pol->thermal_sustain_window_count++;
-			if (rfx_pol->thermal_sustain_window_count > 6)
-            	rfx_pol->thermal_sustain_window_count = 6;
-			rfx_pol->thermal_duty_last_active_ns = time;
-		}
-		return;
-	}
+    effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
+        ? RFX_THERMAL_WINDOW_SHRINK_NS
+        : RFX_THERMAL_WINDOW_NS;
 
-	effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
-		? RFX_THERMAL_WINDOW_SHRINK_NS
-		: RFX_THERMAL_WINDOW_NS;
+    window_elapsed = time - rfx_pol->thermal_duty_window_start_ns;
 
-	window_elapsed = time - rfx_pol->thermal_duty_window_start_ns;
-
-	if (window_elapsed >= effective_window) {
-		rfx_pol->thermal_throttle_active    = true;
-		rfx_pol->thermal_throttle_end_ns    = time + RFX_THERMAL_THROTTLE_BURST_NS;
-	}
+    if (window_elapsed >= effective_window) {
+        rfx_pol->thermal_throttle_active = true;
+        rfx_pol->thermal_throttle_end_ns = time +
+            RFX_THERMAL_THROTTLE_BURST_NS;
+    }
 }
 
 static unsigned long rfx_apply_headroom(unsigned long util,
