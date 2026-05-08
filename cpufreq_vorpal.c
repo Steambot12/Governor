@@ -1345,36 +1345,32 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, unsigned int window_us,
 	rfx_c->prev_wall_time = cur_wall;
 	rfx_c->hispeed_active = true;
 
-		/* PATCH: EWMA Load Smoothing — mengganti step-filter lama */
-	{
-		struct rfx_policy *pol = rfx_c->rfx_policy;
-		unsigned int alpha = pol->tunables->ewma_alpha;
-		unsigned int raw   = rfx_c->busy_pct;
+	/* PATCH: EWMA Load Smoothing — mengganti step-filter lama */
+{
+    struct rfx_policy *pol = rfx_c->rfx_policy;
+    unsigned int alpha = pol->tunables->ewma_alpha;
+    unsigned int raw   = rfx_c->busy_pct;
 
-		/* Pilih alpha berdasar mode: gaming lebih reaktif, idle lebih smooth */
-		if (pol->current_mode == RFX_MODE_GAMING || pol->in_heavy_mode)
-			alpha = max(alpha, (unsigned int)RFX_EWMA_ALPHA_GAMING);
-		else if (pol->force_idle || pol->in_light_mode)
-			alpha = min(alpha, (unsigned int)RFX_EWMA_ALPHA_IDLE);
-		/* === PATCH FIX: LITTLE cluster normal mode pakai alpha lebih smooth === */
-		else if (max_cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD)
-			alpha = min(alpha, (unsigned int)128);   /* 0.50 — cukup smooth untuk UI */
+    /* Pilih alpha berdasar mode */
+    if (pol->current_mode == RFX_MODE_GAMING || pol->in_heavy_mode)
+        alpha = max(alpha, (unsigned int)RFX_EWMA_ALPHA_GAMING);
+    else if (pol->force_idle || pol->in_light_mode)
+        alpha = min(alpha, (unsigned int)RFX_EWMA_ALPHA_IDLE);
+    else if (max_cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD)
+        alpha = min(alpha, (unsigned int)128);
 
-		if (raw == 0) {
-    		rfx_c->ewma_raw = rfx_c->ewma_raw * 230 / RFX_EWMA_SCALE;
+    if (raw == 0) {
+        rfx_c->ewma_raw = rfx_c->ewma_raw * 230 / RFX_EWMA_SCALE;
+    } else if (raw > rfx_c->filtered_busy_pct + 15) {
+        rfx_c->ewma_raw = raw * RFX_EWMA_SCALE;
+    } else {
+        rfx_c->ewma_raw = (alpha * raw +
+                   (RFX_EWMA_SCALE - alpha) *
+                   (rfx_c->ewma_raw / RFX_EWMA_SCALE));
+    }
+    		rfx_c->filtered_busy_pct = rfx_c->ewma_raw / RFX_EWMA_SCALE;
+    		rfx_c->ewma_util_pct     = rfx_c->filtered_busy_pct;
 		}
-		} else if (raw > rfx_c->filtered_busy_pct + 15) {
-			/* Spike tiba-tiba: langsung snap tanpa smoothing */
-			rfx_c->ewma_raw            = raw * RFX_EWMA_SCALE;
-		} else {
-			/* EWMA standar Q8: new = alpha*raw + (1-alpha)*old */
-			rfx_c->ewma_raw = (alpha * raw +
-					   (RFX_EWMA_SCALE - alpha) *
-					   (rfx_c->ewma_raw / RFX_EWMA_SCALE));
-		}
-		rfx_c->filtered_busy_pct = rfx_c->ewma_raw / RFX_EWMA_SCALE;
-		rfx_c->ewma_util_pct     = rfx_c->filtered_busy_pct;
-	}
 	
 }
 
