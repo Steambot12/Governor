@@ -18,13 +18,13 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 55;
-int sysctl_cpu_util_thresh   = 80;
-int sysctl_freq_ratio_thresh = 85;
+int sysctl_heavy_task_thresh = 45;
+int sysctl_cpu_util_thresh   = 70;
+int sysctl_freq_ratio_thresh = 90;
 
-unsigned long sysctl_big_core_guard_ns = 80000000UL;
+unsigned long sysctl_big_core_guard_ns = 40000000UL;
 int           sysctl_burst_thresh      = 25;
-unsigned long sysctl_burst_decay_ns    = 120000000UL;
+unsigned long sysctl_burst_decay_ns    = 80000000UL;
 
 
 /* ------------------------------------------------------------------ *
@@ -569,10 +569,11 @@ int find_best_silver_cpu(struct task_struct *p)
 		return -1;
 	}
 	task_util_pct = ps_task_util_pct(p);
-	if (task_util_pct >= (unsigned long)sysctl_heavy_task_thresh) {
-		atomic_inc(&ps_miss_count);
-		atomic_inc(&ps_miss_task_heavy);
-		return -1;
+	if (task_util_pct >= (unsigned long)sysctl_heavy_task_thresh ||
+    	!ps_check_burst_decay(p)) {
+    	atomic_inc(&ps_miss_count);
+    	atomic_inc(&ps_miss_task_heavy);
+    	return -1;
 	}
 
 	skip_freq_gate = (task_util_pct < 8);
