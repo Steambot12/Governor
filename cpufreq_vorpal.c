@@ -98,7 +98,7 @@ static int rfx_saved_prefer_silver = -1;
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (12000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (10000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
@@ -141,10 +141,10 @@ static int rfx_saved_prefer_silver = -1;
 
 #define RFX_THERMAL_WINDOW_NS            (14000 * NSEC_PER_MSEC)
 #define RFX_THERMAL_WINDOW_SHRINK_NS     (11000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (800  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (600  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     86
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  72
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -160,7 +160,7 @@ static int rfx_saved_prefer_silver = -1;
 
 /* === WALT UTIL FLOOR === */
 /* Floor persen dari max_cap saat gaming mode aktif */
-#define RFX_WALT_FLOOR_GAMING_PCT       55    /* Prime: jangan turun di bawah 45% saat gaming */
+#define RFX_WALT_FLOOR_GAMING_PCT       50    /* Prime: jangan turun di bawah 45% saat gaming */
 #define RFX_WALT_FLOOR_BIG_PCT          40    /* BIG: floor 30% saat gaming */
 #define RFX_WALT_FLOOR_DEFAULT_PCT      0     /* Normal mode: tidak ada floor */
 
@@ -762,24 +762,22 @@ static unsigned int rfx_get_adaptive_shift(unsigned long util,
 
 static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 {
-    u64 time_since_gaming;
-    u64 window_elapsed;
-    u64 effective_window;
-
-    if (rfx_pol->tunables->gaming_mode)
-        return;
+    u64 time_since_gaming, window_elapsed, effective_window, grace;
 
     if (!rfx_pol->in_heavy_mode ||
         rfx_pol->current_mode != RFX_MODE_GAMING)
         return;
 
-    if (!rfx_pol->thermal_duty_window_start_ns) {
+    if (!rfx_pol->thermal_duty_window_start_ns)
         rfx_pol->thermal_duty_window_start_ns = time;
-    }
 
     time_since_gaming = time - rfx_pol->mode_switch_time_ns;
 
-    if (time_since_gaming < (3000 * NSEC_PER_MSEC)) {
+    grace = rfx_pol->tunables->gaming_mode
+                ? (8000 * NSEC_PER_MSEC)
+                : (3000 * NSEC_PER_MSEC);
+
+    if (time_since_gaming < grace) {
         rfx_pol->thermal_throttle_active = false;
         return;
     }
@@ -791,21 +789,26 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
             rfx_pol->thermal_sustain_window_count++;
             if (rfx_pol->thermal_sustain_window_count > 6)
                 rfx_pol->thermal_sustain_window_count = 6;
-            rfx_pol->thermal_duty_last_active_ns = time;
         }
         return;
     }
 
-    effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
-        ? RFX_THERMAL_WINDOW_SHRINK_NS
-        : RFX_THERMAL_WINDOW_NS;
+    /* Window lebih panjang saat gaming_mode=1 supaya tidak terlalu sering throttle */
+    effective_window = rfx_pol->tunables->gaming_mode
+        ? ((rfx_pol->thermal_sustain_window_count >= 3)
+            ? (18000 * NSEC_PER_MSEC)
+            : (22000 * NSEC_PER_MSEC))
+        : ((rfx_pol->thermal_sustain_window_count >= 3)
+            ? RFX_THERMAL_WINDOW_SHRINK_NS
+            : RFX_THERMAL_WINDOW_NS);
 
     window_elapsed = time - rfx_pol->thermal_duty_window_start_ns;
-
     if (window_elapsed >= effective_window) {
         rfx_pol->thermal_throttle_active = true;
         rfx_pol->thermal_throttle_end_ns = time +
-            RFX_THERMAL_THROTTLE_BURST_NS;
+            (rfx_pol->tunables->gaming_mode
+                ? (400 * NSEC_PER_MSEC)   /* throttle lebih singkat 400ms */
+                : RFX_THERMAL_THROTTLE_BURST_NS);
     }
 }
 
@@ -991,12 +994,23 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			      policy->cpuinfo.min_freq, policy->cpuinfo.max_freq);
 
 	/* LITTLE cluster: strict cap when non-gaming */
-	if (is_little && !rfx_pol->in_heavy_mode &&
-    	!rfx_pol->tunables->gaming_mode &&
-    	!(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
-    	unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 72);
-	if (freq > little_nongaming_cap)
-    	freq = little_nongaming_cap;
+	if (is_little) {
+    if (!rfx_pol->in_heavy_mode &&
+        !rfx_pol->tunables->gaming_mode &&
+        !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
+        /* Non-gaming: cap ketat */
+        unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 72);
+        if (freq > little_nongaming_cap)
+            freq = little_nongaming_cap;
+    } else if (rfx_pol->tunables->gaming_mode) {
+        /* Gaming mode ON: cap di 85% tapi ada floor 30% supaya tidak spike */
+        unsigned int gaming_cap   = rfx_adaptive_max(policy, RFX_LITTLE_GAMING_CAP_PCT);
+        unsigned int gaming_floor = rfx_adaptive_floor(policy, 30);
+        if (freq > gaming_cap)
+            freq = gaming_cap;
+        if (freq < gaming_floor)
+            freq = gaming_floor;
+    	}
 	}
 
 	if (is_prime && freq < rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT)) {
