@@ -1047,17 +1047,24 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
         if (is_prime) {
 			if (rfx_pol->tunables->gaming_mode) {
-    			unsigned int hard_floor = rfx_adaptive_floor(policy,
+    		unsigned int hard_floor = rfx_adaptive_floor(policy,
         		RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
 
-    		/* gaming_mode=1: ignore stale throttle state,
-    		* let ROM policy->max be the ceiling */
-    			if (rfx_pol->in_heavy_mode && freq < hard_floor)
-        			freq = hard_floor;
+    	if (rfx_pol->in_heavy_mode && freq < hard_floor)
+        	freq = hard_floor;
 
-    		/* Clamp to policy->max = ROM/device thermal policy */
-    			if (freq > policy->max)
-        			freq = policy->max;
+    	if (rfx_pol->thermal_throttle_active) {
+        	unsigned int gaming_throttle_cap =
+            rfx_adaptive_max(policy, RFX_THERMAL_THROTTLE_CAP_PCT);
+
+        if (gaming_throttle_cap < hard_floor)
+            gaming_throttle_cap = hard_floor;
+        if (freq > gaming_throttle_cap)
+            freq = gaming_throttle_cap;
+    	}
+
+    	if (freq > policy->max)
+        	freq = policy->max;
 
 			} else {
 				unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
