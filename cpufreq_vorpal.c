@@ -44,7 +44,7 @@ static int rfx_saved_prefer_silver = -1;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    8000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    14000
 
 /* Default: Ultra-fast 10us for instant response */
 #define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        10
@@ -103,13 +103,13 @@ static int rfx_saved_prefer_silver = -1;
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              94
-#define RFX_BIG_GAMING_MAX_PCT          92
+#define RFX_GAMING_MAX_PCT              95
+#define RFX_BIG_GAMING_MAX_PCT          93
 #define RFX_PRIME_GAMING_FLOOR_PCT      88
-#define RFX_GAME_LAUNCH_FLOOR_PCT       84
-#define RFX_BIG_GAMING_FLOOR_PCT        70
+#define RFX_GAME_LAUNCH_FLOOR_PCT       85
+#define RFX_BIG_GAMING_FLOOR_PCT        72
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
-#define RFX_LITTLE_GAMING_CAP_PCT       80
+#define RFX_LITTLE_GAMING_CAP_PCT       78
 
 
 /* === LIGHT MODE - AGGRESSIVE IDLE === */
@@ -161,8 +161,8 @@ static int rfx_saved_prefer_silver = -1;
 
 /* === WALT UTIL FLOOR === */
 /* Floor persen dari max_cap saat gaming mode aktif */
-#define RFX_WALT_FLOOR_GAMING_PCT       50    /* Prime: jangan turun di bawah 45% saat gaming */
-#define RFX_WALT_FLOOR_BIG_PCT          40    /* BIG: floor 30% saat gaming */
+#define RFX_WALT_FLOOR_GAMING_PCT       55    /* Prime: jangan turun di bawah 45% saat gaming */
+#define RFX_WALT_FLOOR_BIG_PCT          45    /* BIG: floor 30% saat gaming */
 #define RFX_WALT_FLOOR_DEFAULT_PCT      0     /* Normal mode: tidak ada floor */
 
 /* === THERMAL HEADROOM SOFT THROTTLE === */
@@ -483,7 +483,6 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		rfx_pol->current_mode = RFX_MODE_GAMING;
 		return;
 	}
-
 		time_in_mode = time - rfx_pol->mode_switch_time_ns;
 
 	if (heavy_load && rfx_c->act_state == RFX_ACT_HEAVY) {
@@ -523,7 +522,11 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
             if (!rfx_pol->tunables->gaming_mode)
                 sysctl_gaming_mode_active = 0;
         	}
-    	}
+		}
+			
+		if (rfx_pol->current_mode == RFX_MODE_GAMING && util_pct >= 5) {
+    		rfx_pol->in_heavy_mode = true;
+		}
 	}
 }
 
@@ -765,8 +768,7 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
     if (!rfx_pol || !rfx_pol->tunables)
         return;
 
-    if (!rfx_pol->in_heavy_mode ||
-        rfx_pol->current_mode != RFX_MODE_GAMING)
+    if (rfx_pol->current_mode == RFX_MODE_GAMING)
         return;
 
     if (!rfx_pol->thermal_duty_window_start_ns)
@@ -1197,8 +1199,9 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	}
 
 	/* Force idle: immediate min freq */
-	if (rfx_pol->force_idle && !is_heavy) {
-		freq = policy->cpuinfo.min_freq;
+	if (rfx_pol->force_idle && !is_heavy &&
+    	rfx_pol->current_mode != RFX_MODE_GAMING) {
+    	freq = policy->cpuinfo.min_freq;
 	}
 
 	/* === FRAME PACING FLOOR: stabilkan FPS saat variance tinggi === */
@@ -1224,10 +1227,7 @@ if (is_prime &&
      rfx_pol->current_mode == RFX_MODE_GAMING) &&
     !rfx_pol->thermal_throttle_active) {
 
-    /* Lebih agresif untuk 120FPS */
-    unsigned int floor_pct = rfx_pol->tunables->gaming_mode ? 82 : 78;
-    unsigned int anti_drop_floor = rfx_adaptive_floor(policy, floor_pct);
-
+    unsigned int anti_drop_floor = rfx_adaptive_floor(policy, 80);
     if (freq < anti_drop_floor)
         freq = anti_drop_floor;
 }
@@ -1392,7 +1392,7 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 		}
 	}
 
-	if (rfx_pol->current_mode == RFX_MODE_GAMING || rfx_pol->in_heavy_mode)
+	if (rfx_pol->current_mode == RFX_MODE_GAMING)
     return;
 
 	if (idle_time > 40 * NSEC_PER_MSEC &&
@@ -2621,8 +2621,8 @@ static int rfx_init(struct cpufreq_policy *policy)
     	tunables->cluster_type       = RFX_CLUSTER_PRIME;
     	tunables->rate_limit_us      = CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US;
     	tunables->up_rate_limit_us   = CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US;
-    	tunables->down_rate_limit_us = 12000;
-    	tunables->hispeed_boost_pct  = 88;
+    	tunables->down_rate_limit_us = 18000;
+    	tunables->hispeed_boost_pct  = 90;
     	tunables->walt_floor_pct     = 60;
 	} else {
 		tunables->cluster_type       = RFX_CLUSTER_BIG;
