@@ -26,6 +26,7 @@
 extern int vm_swappiness;
 extern unsigned int sysctl_sched_latency;
 extern int sysctl_prefer_silver;
+extern int sysctl_gaming_mode_active;
 static bool rfx_sysctl_overridden;
 
 static int rfx_saved_prefer_silver = -1;
@@ -897,7 +898,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
     /* Mode-aware rate limiting */
     if (rfx_pol->force_idle) {
         effective_delay = 3 * NSEC_PER_USEC;
-    } else if (rfx_pol->in_heavy_mode ||
+         } else if (rfx_pol->in_heavy_mode ||
                rfx_pol->current_mode == RFX_MODE_GAMING ||
                (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
         if (going_up) {
@@ -905,7 +906,15 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
         } else if (rfx_pol->thermal_throttle_active) {
             effective_delay = 6000 * NSEC_PER_USEC;
         } else {
-            effective_delay = 22000 * NSEC_PER_USEC;
+            /* PATCH: Prime saat gaming_mode=1 lebih lambat turun (2x) */
+            bool is_prime_pol = (arch_scale_cpu_capacity(
+                cpumask_first(rfx_pol->policy->cpus))
+                >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
+
+            effective_delay = (rfx_pol->tunables->gaming_mode && is_prime_pol)
+                ? 44000 * NSEC_PER_USEC   /* 44ms — dua kali lebih lambat */
+                : 22000 * NSEC_PER_USEC;
+        	}
         }
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
         effective_delay = 25 * NSEC_PER_USEC;
@@ -1026,9 +1035,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	/* === TIME-BASED DUTY CYCLE THERMAL === */
 	if (rfx_pol->current_mode == RFX_MODE_GAMING) {
-    	if (!rfx_pol->tunables->gaming_mode &&
-        !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns))
-            rfx_thermal_duty_cycle(rfx_pol, time);
+        rfx_thermal_duty_cycle(rfx_pol, time);
 
         if (is_prime) {
 			if (rfx_pol->tunables->gaming_mode) {
@@ -1060,8 +1067,13 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 				if (freq < hard_floor && rfx_pol->in_heavy_mode)
 					freq = hard_floor;
 			}
+			/* PATCH: Anti-drop guard saat gaming_mode=1 */
+        if (rfx_pol->tunables->gaming_mode && is_prime) {
+            unsigned int anti_drop_floor = rfx_adaptive_floor(policy, 65);
+            if (!rfx_pol->thermal_throttle_active && freq < anti_drop_floor)
+                freq = anti_drop_floor;
+        	}
 		} else if (!is_little) {
-
 				if (rfx_pol->tunables->gaming_mode) {
     			/* gaming_mode=1: ROM decides ceiling via policy->max */
     				if (freq > policy->max)
@@ -2272,10 +2284,10 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 
     list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
         if (val) {
-            
             if (rfx_saved_prefer_silver < 0)
                 rfx_saved_prefer_silver = sysctl_prefer_silver;
             sysctl_prefer_silver = 0;
+			sysctl_gaming_mode_active = 1;
         } else {
             /* gaming_mode = 0: reset state + kembalikan prefer_silver */
             rfx_pol->gaming_lock_end_ns      = 0;
@@ -2300,6 +2312,7 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
                 sysctl_prefer_silver = rfx_saved_prefer_silver;
                 rfx_saved_prefer_silver = -1;
             }
+			sysctl_gaming_mode_active = 0;
         }
     }
 
@@ -2610,10 +2623,12 @@ static int rfx_init(struct cpufreq_policy *policy)
 		tunables->up_rate_limit_us   = CPUFREQ_VORPAL_LITTLE_UP_RATE_LIMIT_US;
 		tunables->down_rate_limit_us = CPUFREQ_VORPAL_LITTLE_DOWN_RATE_LIMIT_US;
 	} else if (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD) {
-		tunables->cluster_type       = RFX_CLUSTER_PRIME;
-		tunables->rate_limit_us      = CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US;
-		tunables->up_rate_limit_us   = CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US;
-		tunables->down_rate_limit_us = CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US;
+    	tunables->cluster_type       = RFX_CLUSTER_PRIME;
+    	tunables->rate_limit_us      = CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US;
+    	tunables->up_rate_limit_us   = CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US;
+    	tunables->down_rate_limit_us = 12000;
+    	tunables->hispeed_boost_pct  = 88;
+    	tunables->walt_floor_pct     = 52;
 	} else {
 		tunables->cluster_type       = RFX_CLUSTER_BIG;
 		tunables->rate_limit_us      = CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US;
