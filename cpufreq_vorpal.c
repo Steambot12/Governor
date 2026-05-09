@@ -98,7 +98,7 @@ static int rfx_saved_prefer_silver = -1;
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (10000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (14000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
@@ -141,10 +141,10 @@ static int rfx_saved_prefer_silver = -1;
 
 #define RFX_THERMAL_WINDOW_NS            (14000 * NSEC_PER_MSEC)
 #define RFX_THERMAL_WINDOW_SHRINK_NS     (11000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (600  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (500  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     86
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  72
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  78
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
