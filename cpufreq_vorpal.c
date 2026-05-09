@@ -87,8 +87,8 @@ static int rfx_saved_prefer_silver = -1;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (250 * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD                  12
+#define RFX_BURST_GUARD_NS    (800 * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD                  10
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
@@ -103,13 +103,13 @@ static int rfx_saved_prefer_silver = -1;
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              90
-#define RFX_BIG_GAMING_MAX_PCT          88
-#define RFX_PRIME_GAMING_FLOOR_PCT      82
-#define RFX_GAME_LAUNCH_FLOOR_PCT       72
-#define RFX_BIG_GAMING_FLOOR_PCT        60
+#define RFX_GAMING_MAX_PCT              94
+#define RFX_BIG_GAMING_MAX_PCT          92
+#define RFX_PRIME_GAMING_FLOOR_PCT      88
+#define RFX_GAME_LAUNCH_FLOOR_PCT       82
+#define RFX_BIG_GAMING_FLOOR_PCT        70
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
-#define RFX_LITTLE_GAMING_CAP_PCT       85
+#define RFX_LITTLE_GAMING_CAP_PCT       80
 
 
 /* === LIGHT MODE - AGGRESSIVE IDLE === */
@@ -179,10 +179,10 @@ static int rfx_saved_prefer_silver = -1;
 #define RFX_THERMAL_THROTTLE_HARD_PCT   82    /* Hard cap saat headroom rendah */
 
 /* === FRAME PACING FLOOR === */
-#define RFX_FRAME_VARIANCE_THRESH       35    /* Variance di atas ini = frame tidak stabil */
-#define RFX_FRAME_FLOOR_PRIME_PCT       68    /* Floor Prime saat frame variance tinggi */
-#define RFX_FRAME_FLOOR_BIG_PCT         45    /* Floor BIG saat frame variance tinggi */
-#define RFX_FRAME_BOOST_DURATION_NS     (120 * NSEC_PER_MSEC)
+#define RFX_FRAME_VARIANCE_THRESH       22    /* Variance di atas ini = frame tidak stabil */
+#define RFX_FRAME_FLOOR_PRIME_PCT       75    /* Floor Prime saat frame variance tinggi */
+#define RFX_FRAME_FLOOR_BIG_PCT         55    /* Floor BIG saat frame variance tinggi */
+#define RFX_FRAME_BOOST_DURATION_NS     (220 * NSEC_PER_MSEC)
 
 /* === CLUSTER THRESHOLDS === */
 
@@ -503,13 +503,17 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		time_in_mode = time - rfx_pol->mode_switch_time_ns;
 
 	if (heavy_load && rfx_c->act_state == RFX_ACT_HEAVY) {
-		if (rfx_pol->current_mode != RFX_MODE_GAMING) {
-			if (time_in_mode > 24 * NSEC_PER_MSEC) {
-				rfx_pol->current_mode = RFX_MODE_GAMING;
-				rfx_pol->mode_switch_time_ns = time;
-				rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
-			}
-		}
+    if (rfx_pol->current_mode != RFX_MODE_GAMING) {
+        if (time_in_mode > 24 * NSEC_PER_MSEC) {
+            rfx_pol->current_mode        = RFX_MODE_GAMING;
+            rfx_pol->mode_switch_time_ns = time;
+            rfx_pol->gaming_lock_end_ns  = time + RFX_GAMING_LOCK_DURATION_NS;
+
+            /* AUTO-GAMING ↔ prefer_silver sync */
+            if (!rfx_pol->tunables->gaming_mode)
+                sysctl_gaming_mode_active = 1;
+        	}
+    	}
 	} else if (periodic_pattern && !heavy_load) {
     	not_in_gaming = (rfx_pol->current_mode != RFX_MODE_GAMING) &&
                     !(rfx_pol->gaming_lock_end_ns &&
@@ -521,17 +525,21 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
         	}
     	}
 	} else if (util_pct < 6 && rfx_pol->in_light_mode) {
-		if (rfx_pol->current_mode != RFX_MODE_NORMAL) {
-			if (time_in_mode > 32 * NSEC_PER_MSEC) {
-				rfx_pol->current_mode = RFX_MODE_NORMAL;
-				rfx_pol->mode_switch_time_ns = time;
-				rfx_pol->gaming_lock_end_ns = 0;
-				rfx_pol->thermal_duty_window_start_ns = 0;
-				rfx_pol->thermal_throttle_active = false;
-				rfx_pol->thermal_throttle_end_ns = 0;
-				rfx_pol->thermal_sustain_window_count = 0;
-			}
-		}
+    if (rfx_pol->current_mode != RFX_MODE_NORMAL) {
+        if (time_in_mode > 32 * NSEC_PER_MSEC) {
+            rfx_pol->current_mode = RFX_MODE_NORMAL;
+            rfx_pol->mode_switch_time_ns = time;
+            rfx_pol->gaming_lock_end_ns = 0;
+            rfx_pol->thermal_duty_window_start_ns = 0;
+            rfx_pol->thermal_throttle_active = false;
+            rfx_pol->thermal_throttle_end_ns = 0;
+            rfx_pol->thermal_sustain_window_count = 0;
+
+            /* Kembali aktifkan prefer_silver jika hanya auto-gaming */
+            if (!rfx_pol->tunables->gaming_mode)
+                sysctl_gaming_mode_active = 0;
+        	}
+    	}
 	}
 }
 
@@ -792,8 +800,8 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
                         : 0;
 
     grace_ns = rfx_pol->tunables->gaming_mode
-               ? (8000ULL * NSEC_PER_MSEC)
-               : (3000ULL * NSEC_PER_MSEC);
+               	? (12000ULL * NSEC_PER_MSEC)
+           		: (3000ULL * NSEC_PER_MSEC);
 
     if (time_since_gaming < grace_ns) {
         rfx_pol->thermal_throttle_active = false;
@@ -821,7 +829,7 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
         effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
                            ? (18000ULL * NSEC_PER_MSEC)
                            : (22000ULL * NSEC_PER_MSEC);
-        effective_throttle_ns = 400ULL * NSEC_PER_MSEC;
+        effective_throttle_ns = 250ULL * NSEC_PER_MSEC;
     } else {
         effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
                            ? RFX_THERMAL_WINDOW_SHRINK_NS
@@ -1228,13 +1236,29 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         /* LITTLE sengaja tidak dipaksa floor, biar hemat dan
          * cluster besar yang handle frame pacing. */
     }
-	/* PATCH: Anti-drop guard saat gaming_mode=1 */
-    if (rfx_pol->tunables->gaming_mode && is_prime &&
-        !rfx_pol->thermal_throttle_active) {
-        unsigned int anti_drop_floor = rfx_adaptive_floor(policy, 65);
-        if (freq < anti_drop_floor)
-            freq = anti_drop_floor;
-    }
+
+	if (!is_prime && max > (unsigned long)RFX_LITTLE_CAP_THRESHOLD &&
+    	(rfx_pol->tunables->gaming_mode ||
+     	rfx_pol->current_mode == RFX_MODE_GAMING) &&
+    	!rfx_pol->thermal_throttle_active) {
+
+    unsigned int big_floor = rfx_adaptive_floor(policy, 68);
+    if (freq < big_floor)
+        freq = big_floor;
+	}
+
+	/* PATCH: Anti-drop guard – juga aktif di auto-GAMING */
+	if (is_prime &&
+    	(rfx_pol->tunables->gaming_mode ||
+     	rfx_pol->current_mode == RFX_MODE_GAMING) &&
+    	!rfx_pol->thermal_throttle_active) {
+
+    unsigned int floor_pct = rfx_pol->tunables->gaming_mode ? 80 : 75;
+    unsigned int anti_drop_floor = rfx_adaptive_floor(policy, floor_pct);
+
+    if (freq < anti_drop_floor)
+        freq = anti_drop_floor;
+	}
 
 	/* Freq cap */
 	if (freq_cap_khz > 0) {
@@ -2663,7 +2687,7 @@ static int rfx_init(struct cpufreq_policy *policy)
     	tunables->up_rate_limit_us   = CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US;
     	tunables->down_rate_limit_us = 12000;
     	tunables->hispeed_boost_pct  = 88;
-    	tunables->walt_floor_pct     = 52;
+    	tunables->walt_floor_pct     = 60;
 	} else {
 		tunables->cluster_type       = RFX_CLUSTER_BIG;
 		tunables->rate_limit_us      = CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US;
