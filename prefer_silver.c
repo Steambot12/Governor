@@ -21,10 +21,16 @@ int sysctl_prefer_silver     = 1;
 int sysctl_heavy_task_thresh = 45;
 int sysctl_cpu_util_thresh   = 78;
 int sysctl_freq_ratio_thresh = 95;
+int sysctl_gaming_mode_active __read_mostly = 0;
+EXPORT_SYMBOL(sysctl_gaming_mode_active);
 
 unsigned long sysctl_big_core_guard_ns = 40000000UL;
 int           sysctl_burst_thresh      = 25;
 unsigned long sysctl_burst_decay_ns    = 80000000UL;
+
+/* Gaming mode bridge — di-set oleh vorpal governor */
+int sysctl_gaming_mode_active __read_mostly = 0;
+EXPORT_SYMBOL(sysctl_gaming_mode_active);
 
 
 /* ------------------------------------------------------------------ *
@@ -505,6 +511,12 @@ static inline bool ps_check_burst_decay(struct task_struct *p)
     return (now - last_burst) >= decay_ns;
 }
 
+static inline int ps_effective_freq_thresh(void)
+{
+    if (sysctl_gaming_mode_active)
+        return min(sysctl_freq_ratio_thresh + 8, 100);
+    return sysctl_freq_ratio_thresh;
+}
 
 /* ------------------------------------------------------------------ *
  * Check functions
@@ -513,7 +525,7 @@ bool prefer_silver_check_freq(int cpu)
 {
     unsigned long silver_freq = (unsigned long)cpufreq_quick_get(cpu);
     unsigned long gold_max    = READ_ONCE(ps_gold_max_freq);
-    int freq_th = clamp(sysctl_freq_ratio_thresh, 1, 100);
+    int freq_th = clamp(ps_effective_freq_thresh(), 1, 100);
 
     if (!silver_freq || !gold_max)
         return true;
@@ -533,6 +545,14 @@ bool prefer_silver_check_task_util(struct task_struct *p)
     return ps_task_util_pct(p) < heavy;
 }
 
+/* Longgarkan threshold silver saat gaming aktif agar task UI
+ * tidak "bocor" ke BIG/Prime → lebih hemat dan Prime lebih bebas */
+static inline int ps_effective_freq_thresh(void)
+{
+    if (sysctl_gaming_mode_active)
+        return min(sysctl_freq_ratio_thresh + 8, 100);
+    return sysctl_freq_ratio_thresh;
+}
 
 /* ------------------------------------------------------------------ *
  * Main placement
@@ -564,11 +584,12 @@ int find_best_silver_cpu(struct task_struct *p)
 		return -1;
 	}
 	if (!ps_check_burst_decay(p)) {
-		atomic_inc(&ps_miss_count);
-		atomic_inc(&ps_miss_burst);
-		return -1;
+    	atomic_inc(&ps_miss_count);
+    	atomic_inc(&ps_miss_burst);
+    	return -1;
 	}
 	task_util_pct = ps_task_util_pct(p);
+/* Hapus ps_check_burst_decay kedua — sudah dicek di atas */
 	if (task_util_pct >= (unsigned long)sysctl_heavy_task_thresh) {
     	atomic_inc(&ps_miss_count);
     	atomic_inc(&ps_miss_task_heavy);
@@ -717,6 +738,13 @@ static struct ctl_table prefer_silver_table[] = {
 		.mode         = 0644,
 		.proc_handler = proc_doulongvec_minmax,
 	},
+	{
+        .procname     = "gaming_mode_active",
+        .data         = &sysctl_gaming_mode_active,
+        .maxlen       = sizeof(int),
+        .mode         = 0644,
+        .proc_handler = proc_dointvec,
+    },
 	{ }
 };
 
