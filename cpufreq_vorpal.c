@@ -142,7 +142,7 @@ static int rfx_saved_prefer_silver = -1;
 
 #define RFX_THERMAL_WINDOW_NS            (14000 * NSEC_PER_MSEC)
 #define RFX_THERMAL_WINDOW_SHRINK_NS     (11000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (500  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (600  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     86
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  72
@@ -763,6 +763,10 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 {
     u64 time_since_gaming, window_elapsed, effective_window;
     u64 effective_throttle_ns;
+    u64 grace_ns;
+
+    if (!rfx_pol || !rfx_pol->tunables)
+        return;
 
     if (!rfx_pol->in_heavy_mode ||
         rfx_pol->current_mode != RFX_MODE_GAMING)
@@ -771,18 +775,24 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
     if (!rfx_pol->thermal_duty_window_start_ns)
         rfx_pol->thermal_duty_window_start_ns = time;
 
-    /* Grace period sebelum duty cycle mulai bekerja.
+    /*
+     * Grace period sebelum duty cycle mulai bekerja.
      * Gaming mode dapat grace lebih panjang (8s) agar tidak
-     * langsung throttle di awal game launch. */
-    time_since_gaming = time - rfx_pol->mode_switch_time_ns;
-    {
-        u64 grace_ns = rfx_pol->tunables->gaming_mode
-                       ? (8000ULL * NSEC_PER_MSEC)
-                       : (3000ULL * NSEC_PER_MSEC);
-        if (time_since_gaming < grace_ns) {
-            rfx_pol->thermal_throttle_active = false;
-            return;
-        }
+     * langsung throttle di awal game launch.
+     * Guard mode_switch_time_ns == 0 untuk mencegah underflow.
+     */
+    time_since_gaming = (rfx_pol->mode_switch_time_ns &&
+                         time > rfx_pol->mode_switch_time_ns)
+                        ? (time - rfx_pol->mode_switch_time_ns)
+                        : 0;
+
+    grace_ns = rfx_pol->tunables->gaming_mode
+               ? (8000ULL * NSEC_PER_MSEC)
+               : (3000ULL * NSEC_PER_MSEC);
+
+    if (time_since_gaming < grace_ns) {
+        rfx_pol->thermal_throttle_active = false;
+        return;
     }
 
     /* Jika sedang dalam periode throttle, tunggu habis dulu */
@@ -797,13 +807,15 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
         return;
     }
 
-    /* Window lebih panjang saat gaming_mode=1:
-     * 22s (fresh) / 18s (setelah sustain lama) vs 14s / 11s normal */
+    /*
+     * Window lebih panjang saat gaming_mode=1:
+     * 22s (fresh) / 18s (setelah sustain >= 3x) vs 14s / 11s normal.
+     * Throttle lebih singkat saat gaming (400ms) untuk recovery cepat.
+     */
     if (rfx_pol->tunables->gaming_mode) {
         effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
                            ? (18000ULL * NSEC_PER_MSEC)
                            : (22000ULL * NSEC_PER_MSEC);
-        /* Throttle lebih singkat saat gaming: 400ms vs 500ms */
         effective_throttle_ns = 400ULL * NSEC_PER_MSEC;
     } else {
         effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
@@ -1019,15 +1031,13 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         if (freq > little_nongaming_cap)
             freq = little_nongaming_cap;
     } else if (rfx_pol->tunables->gaming_mode) {
-        unsigned int gaming_cap =
-            rfx_adaptive_max(policy, RFX_LITTLE_GAMING_CAP_PCT);
-        unsigned int gaming_floor =
-            rfx_adaptive_floor(policy, 30);
-        if (freq > gaming_cap)
-            freq = gaming_cap;
-        if (freq < gaming_floor)
-            freq = gaming_floor;
-    }
+    unsigned int gaming_cap   = rfx_adaptive_max(policy, RFX_LITTLE_GAMING_CAP_PCT);
+    unsigned int gaming_floor = rfx_adaptive_floor(policy, 30); // ← TAMBAH INI
+    if (freq > gaming_cap)
+        freq = gaming_cap;
+    if (freq < gaming_floor)
+        freq = gaming_floor;
+	}
 }
 
 	if (is_prime && freq < rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT)) {
