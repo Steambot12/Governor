@@ -24,9 +24,15 @@ int sysctl_freq_ratio_thresh = 97;
 int sysctl_gaming_mode_active __read_mostly = 0;
 EXPORT_SYMBOL(sysctl_gaming_mode_active);
 
-unsigned long sysctl_big_core_guard_ns = 40000000UL;
+void prefer_silver_set_gaming(int active)
+{
+    WRITE_ONCE(sysctl_gaming_mode_active, active ? 1 : 0);
+}
+EXPORT_SYMBOL_GPL(prefer_silver_set_gaming);
+
+unsigned long sysctl_big_core_guard_ns = 120000000UL;
 int           sysctl_burst_thresh      = 25;
-unsigned long sysctl_burst_decay_ns    = 80000000UL;
+unsigned long sysctl_burst_decay_ns    = 150000000UL;
 
 
 /* ------------------------------------------------------------------ *
