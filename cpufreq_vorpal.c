@@ -463,10 +463,13 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 
 	/* Gaming mode tunable - user explicitly set via sysfs */
 	if (rfx_pol->tunables->gaming_mode) {
-		rfx_pol->current_mode       = RFX_MODE_GAMING;
-		rfx_pol->in_light_mode      = false;
-		rfx_pol->force_idle         = false;
-		rfx_pol->sustain_exit_ticks = 0;
+    if (rfx_pol->current_mode != RFX_MODE_GAMING) {
+        rfx_pol->current_mode        = RFX_MODE_GAMING;
+        rfx_pol->mode_switch_time_ns = time;   /* ← TAMBAH INI */
+    }
+    	rfx_pol->in_light_mode      = false;
+    	rfx_pol->force_idle         = false;
+    	rfx_pol->sustain_exit_ticks = 0;
 
 		if (util_pct >= 5) {
         	rfx_pol->in_heavy_mode      = true;
@@ -475,7 +478,9 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
                time < rfx_pol->gaming_lock_end_ns) {
         	rfx_pol->in_heavy_mode = true;
     	} else {
-        	rfx_pol->in_heavy_mode = false;
+        /* PATCH: saat gaming_mode=1, in_heavy_mode tidak boleh false total
+         * supaya duty cycle tetap bisa berjalan di lull antar scene */
+        	rfx_pol->in_heavy_mode = rfx_pol->tunables->gaming_mode ? true : false;
     	}
 
 		if (rfx_pol->policy) {
@@ -1092,12 +1097,6 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 				if (freq < hard_floor && rfx_pol->in_heavy_mode)
 					freq = hard_floor;
 			}
-			/* PATCH: Anti-drop guard saat gaming_mode=1 */
-        if (rfx_pol->tunables->gaming_mode && is_prime) {
-            unsigned int anti_drop_floor = rfx_adaptive_floor(policy, 65);
-            if (!rfx_pol->thermal_throttle_active && freq < anti_drop_floor)
-                freq = anti_drop_floor;
-        	}
 		} else if (!is_little) {
 				if (rfx_pol->tunables->gaming_mode) {
     			/* gaming_mode=1: ROM decides ceiling via policy->max */
@@ -1229,6 +1228,13 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         }
         /* LITTLE sengaja tidak dipaksa floor, biar hemat dan
          * cluster besar yang handle frame pacing. */
+    }
+	/* PATCH: Anti-drop guard saat gaming_mode=1 */
+    if (rfx_pol->tunables->gaming_mode && is_prime &&
+        !rfx_pol->thermal_throttle_active) {
+        unsigned int anti_drop_floor = rfx_adaptive_floor(policy, 65);
+        if (freq < anti_drop_floor)
+            freq = anti_drop_floor;
     }
 
 	/* Freq cap */
@@ -2312,7 +2318,12 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
             if (rfx_saved_prefer_silver < 0)
                 rfx_saved_prefer_silver = sysctl_prefer_silver;
             sysctl_prefer_silver = 0;
-			sysctl_gaming_mode_active = 1;
+            sysctl_gaming_mode_active = 1;
+            /* PATCH: reset mode switch time saat gaming_mode diaktifkan */
+            rfx_pol->current_mode        = RFX_MODE_GAMING;
+            rfx_pol->mode_switch_time_ns = ktime_get_ns();
+            rfx_pol->thermal_duty_window_start_ns = 0;
+            rfx_pol->thermal_sustain_window_count = 0;
         } else {
             /* gaming_mode = 0: reset state + kembalikan prefer_silver */
             rfx_pol->gaming_lock_end_ns      = 0;
