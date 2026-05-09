@@ -30,6 +30,7 @@ extern int sysctl_gaming_mode_active;
 static bool rfx_sysctl_overridden;
 
 static int rfx_saved_prefer_silver = -1;
+static DEFINE_MUTEX(rfx_prefer_silver_lock);
 
 #define CPUFREQ_VORPAL_PROGNAME     "Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR       "Templar Dev"
@@ -477,8 +478,9 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 
 	/* Gaming lock check - pertahankan GAMING mode selama lock aktif */
 	if (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns) {
-		rfx_pol->current_mode = RFX_MODE_GAMING;
-		return;
+    	rfx_pol->current_mode  = RFX_MODE_GAMING;
+    	rfx_pol->in_heavy_mode = true;  /* ← pastikan masih heavy selama lock */
+    return;
 	}
 
 	time_in_mode = time - rfx_pol->mode_switch_time_ns;
@@ -1850,34 +1852,33 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util, max_cap, is_big_cluster, time);
 	}
 
-		if (rfx_pol->tunables->gaming_mode) {
-		unsigned int h  = rfx_c->util_history_idx;
-		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
-		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
-		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-		/* Pattern 1: gradual rising (existing) */
-		bool rising = h1 > h2 && h2 > h3 && h1 > 20;
-		/* Pattern 2: sudden spike from idle/low — catch swipe/gesture bursts */
-		bool sudden_spike = (h1 > 30) && (h2 < 20) && (h1 > h2 + 15);
-		/* Pattern 3: high-but-flat load staying heavy */
-		bool sustained_heavy = (h1 >= 35) && (h2 >= 35) && (h3 >= 35);
-		/* Pattern 4: burst-dip-burst (WuWa animation sequence) */
-		bool wuwa_anim = (h1 > 25) && (h3 > 25) && (h2 < 18);
+		if (rfx_pol->tunables->gaming_mode ||
+    		rfx_pol->current_mode == RFX_MODE_GAMING) {
+    		unsigned int h  = rfx_c->util_history_idx;
+    		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
+    		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
+    		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
+    		bool rising          = h1 > h2 && h2 > h3 && h1 > 20;
+    		bool sudden_spike    = (h1 > 30) && (h2 < 20) && (h1 > h2 + 15);
+    		bool sustained_heavy = (h1 >= 35) && (h2 >= 35) && (h3 >= 35);
+    		bool wuwa_anim       = (h1 > 25) && (h3 > 25) && (h2 < 18);
 
-		if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
-            rfx_pol->in_heavy_mode      = true;
-            rfx_pol->gaming_lock_end_ns = time +
-                (sudden_spike || wuwa_anim ? (1200 * NSEC_PER_MSEC)
-                                           : (800 * NSEC_PER_MSEC));
-            rfx_pol->render_urgency_active = true;
-            rfx_pol->render_boost_end_ns = time +
-                (rfx_pol->tunables->gaming_mode
-                    ? (sudden_spike || wuwa_anim
-                        ? (600 * NSEC_PER_MSEC)
-                        : (150 * NSEC_PER_MSEC))
-                    : (80 * NSEC_PER_MSEC));
-        }
-    }
+    	if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
+        	rfx_pol->in_heavy_mode      = true;
+        	rfx_pol->gaming_lock_end_ns = time +
+            (sudden_spike || wuwa_anim ? (1200 * NSEC_PER_MSEC)
+                                       : (800  * NSEC_PER_MSEC));
+        	rfx_pol->render_urgency_active = true;
+        	rfx_pol->render_boost_end_ns   = time +
+            (rfx_pol->tunables->gaming_mode
+                ? (sudden_spike || wuwa_anim
+                    ? (600 * NSEC_PER_MSEC)
+                    : (150 * NSEC_PER_MSEC))
+                : (sudden_spike || wuwa_anim
+                    ? (600 * NSEC_PER_MSEC)
+                    : (150 * NSEC_PER_MSEC)));
+    		}
+		}
 
 	if (!rfx_pol->tunables->gaming_mode && rfx_pol->current_mode == RFX_MODE_GAMING) {
     	unsigned int h  = rfx_c->util_history_idx;
@@ -1930,11 +1931,10 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		if (!rfx_pol->guard_end_ns) {
                         gf = rfx_pol->next_freq ? rfx_pol->next_freq : next_f;
                         if (max_cap > RFX_LITTLE_CAP_THRESHOLD) {
-                                unsigned int big_floor = rfx_adaptive_floor(policy, 75);
-                                        rfx_pol->policy, RFX_BIG_INTERACTIVE_FLOOR_PCT;
-                                if (gf < big_floor)
-                                        gf = big_floor;
-                        }
+    						unsigned int big_floor = rfx_adaptive_floor(rfx_pol->policy, 75);
+    					if (gf < big_floor)
+        					gf = big_floor;
+						}
                         rfx_pol->guard_end_ns   = time + RFX_BURST_GUARD_NS;
                         rfx_pol->guard_freq_khz = gf;
                 }
@@ -2135,11 +2135,10 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 		if (!rfx_pol->guard_end_ns) {
                         sgf = rfx_pol->next_freq ? rfx_pol->next_freq : next_f;
                         if (max_cap > RFX_LITTLE_CAP_THRESHOLD) {
-                                unsigned int big_floor = rfx_adaptive_floor(policy, 75);
-                                        rfx_pol->policy, RFX_BIG_INTERACTIVE_FLOOR_PCT;
-                                if (sgf < big_floor)
-                                        sgf = big_floor;
-                        }
+    						unsigned int big_floor = rfx_adaptive_floor(policy, 75);
+    					if (sgf < big_floor)
+        					sgf = big_floor;
+						}
                         rfx_pol->guard_end_ns   = time + RFX_BURST_GUARD_NS;
                         rfx_pol->guard_freq_khz = sgf;
                 }
@@ -2327,61 +2326,74 @@ static ssize_t gaming_mode_show(struct gov_attr_set *attr_set, char *buf)
 {
 	return sprintf(buf, "%u\n", to_rfx_tunables(attr_set)->gaming_mode);
 }
+
 static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
-				const char *buf, size_t count)
+                const char *buf, size_t count)
 {
-	struct rfx_tunables *t = to_rfx_tunables(attr_set);
-	struct rfx_policy *rfx_pol;
-	unsigned int val;
+    struct rfx_tunables *t = to_rfx_tunables(attr_set);
+    struct rfx_policy *rfx_pol;
+    unsigned int val;
 
-	if (kstrtouint(buf, 10, &val))
-		return -EINVAL;
-	if (val > 1)
-		return -EINVAL;
+    if (kstrtouint(buf, 10, &val))
+        return -EINVAL;
+    if (val > 1)
+        return -EINVAL;
 
-	    t->gaming_mode = val;
+    t->gaming_mode = val;
 
+    /* Sinkronisasi prefer_silver dengan mutex */
+    if (val) {
+        /* SET — matikan prefer_silver, simpan nilai lama */
+        mutex_lock(&rfx_prefer_silver_lock);
+        if (rfx_saved_prefer_silver < 0)
+            rfx_saved_prefer_silver = sysctl_prefer_silver;
+        sysctl_prefer_silver      = 0;
+        sysctl_gaming_mode_active = 1;
+        mutex_unlock(&rfx_prefer_silver_lock);
+    } else {
+        /* CLEAR — kembalikan prefer_silver ke nilai semula */
+        mutex_lock(&rfx_prefer_silver_lock);
+        if (rfx_saved_prefer_silver >= 0) {
+            sysctl_prefer_silver    = rfx_saved_prefer_silver;
+            rfx_saved_prefer_silver = -1;
+        }
+        sysctl_gaming_mode_active = 0;
+        mutex_unlock(&rfx_prefer_silver_lock);
+    }
+
+    /* Update state tiap policy */
     list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
         if (val) {
-            if (rfx_saved_prefer_silver < 0)
-                rfx_saved_prefer_silver = sysctl_prefer_silver;
-            sysctl_prefer_silver = 0;
-            sysctl_gaming_mode_active = 1;
-            /* PATCH: reset mode switch time saat gaming_mode diaktifkan */
-            rfx_pol->current_mode        = RFX_MODE_GAMING;
-            rfx_pol->mode_switch_time_ns = ktime_get_ns();
-            rfx_pol->thermal_duty_window_start_ns = 0;
-            rfx_pol->thermal_sustain_window_count = 0;
+            /* gaming_mode = 1: paksa masuk GAMING, reset thermal */
+            rfx_pol->current_mode                 = RFX_MODE_GAMING;
+            rfx_pol->mode_switch_time_ns           = ktime_get_ns();
+            rfx_pol->thermal_duty_window_start_ns  = 0;
+            rfx_pol->thermal_sustain_window_count  = 0;
         } else {
-            /* gaming_mode = 0: reset state + kembalikan prefer_silver */
-            rfx_pol->gaming_lock_end_ns      = 0;
-            rfx_pol->current_mode            = RFX_MODE_NORMAL;
-            rfx_pol->in_heavy_mode           = false;
-            rfx_pol->in_light_mode           = false;
-            rfx_pol->force_idle              = false;
-            rfx_pol->need_freq_update        = true;
-            rfx_pol->mode_switch_time_ns     = ktime_get_ns();
-            rfx_pol->game_launching          = false;
-            rfx_pol->game_launch_end_ns      = 0;
-            rfx_pol->prime_gaming_floor_active = false;
-            rfx_pol->prime_gaming_floor_end_ns = 0;
-            rfx_pol->render_urgency_active   = false;
-            rfx_pol->render_boost_end_ns     = 0;
-            rfx_pol->thermal_throttle_active = false;
-            rfx_pol->thermal_throttle_end_ns = 0;
-            rfx_pol->thermal_sustain_window_count = 0;
-            rfx_pol->thermal_duty_window_start_ns = 0;
-
-            if (rfx_saved_prefer_silver >= 0) {
-                sysctl_prefer_silver = rfx_saved_prefer_silver;
-                rfx_saved_prefer_silver = -1;
-            }
-			sysctl_gaming_mode_active = 0;
+            /* gaming_mode = 0: reset semua state ke NORMAL */
+            rfx_pol->gaming_lock_end_ns            = 0;
+            rfx_pol->current_mode                  = RFX_MODE_NORMAL;
+            rfx_pol->in_heavy_mode                 = false;
+            rfx_pol->in_light_mode                 = false;
+            rfx_pol->force_idle                    = false;
+            rfx_pol->need_freq_update              = true;
+            rfx_pol->mode_switch_time_ns           = ktime_get_ns();
+            rfx_pol->game_launching                = false;
+            rfx_pol->game_launch_end_ns            = 0;
+            rfx_pol->prime_gaming_floor_active     = false;
+            rfx_pol->prime_gaming_floor_end_ns     = 0;
+            rfx_pol->render_urgency_active         = false;
+            rfx_pol->render_boost_end_ns           = 0;
+            rfx_pol->thermal_throttle_active       = false;
+            rfx_pol->thermal_throttle_end_ns       = 0;
+            rfx_pol->thermal_sustain_window_count  = 0;
+            rfx_pol->thermal_duty_window_start_ns  = 0;
         }
     }
 
     return count;
 }
+
 static struct governor_attr gaming_mode =
 	__ATTR(gaming_mode, 0644, gaming_mode_show, gaming_mode_store);
 
