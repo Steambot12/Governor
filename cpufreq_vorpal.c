@@ -155,7 +155,7 @@ static int rfx_saved_prefer_silver = -1;
 /* === EWMA LOAD SMOOTHING === */
 /* Alpha dalam fixed-point Q8: 204 ≈ 0.80, 128 ≈ 0.50, 77 ≈ 0.30 */
 #define RFX_EWMA_ALPHA_DEFAULT          192   /* ≈ 0.60 — balance responsif vs smooth */
-#define RFX_EWMA_ALPHA_GAMING           204   /* ≈ 0.80 — lebih reaktif saat gaming */
+#define RFX_EWMA_ALPHA_GAMING           217   /* ≈ 0.80 — lebih reaktif saat gaming */
 #define RFX_EWMA_ALPHA_IDLE             77    /* ≈ 0.30 — sangat smooth saat idle */
 #define RFX_EWMA_SCALE                  256   /* Q8 fixed-point denominator */
 
@@ -339,8 +339,6 @@ struct rfx_policy {
 	enum rfx_mode		current_mode;
 	u64			mode_switch_time_ns;
 	u64			gaming_lock_end_ns;
-	bool			video_pattern_detected;
-	u64			video_detect_start_ns;
 	u64			idle_entry_time_ns;
 	bool			in_deep_idle;
 	u64   		game_launch_end_ns;
@@ -388,8 +386,6 @@ struct rfx_cpu {
 	unsigned int		prev_util_pct;
 	unsigned int		util_history[8];
 	u8			util_history_idx;
-	bool			is_video_pattern;
-	bool			is_gaming_pattern;
 	/* PATCH: EWMA smoothed util */
 	unsigned int		ewma_util_pct;       /* EWMA dari busy_pct, Q8 fixed-point */
 	unsigned int		ewma_raw;            /* internal accumulator */
@@ -873,9 +869,9 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
     if (mode == RFX_MODE_GAMING) {
     	if (is_prime)
-        	headroom_pct = is_heavy ? 30 : 22;
+        	headroom_pct = is_heavy ? 38 : 32;  /* naik: 30/22 → 38/32 */
     	else
-        	headroom_pct = is_heavy ? 30 : 24;
+        	headroom_pct = is_heavy ? 34 : 28;  /* naik: 30/24 → 34/28 */
     	return min(util + util * headroom_pct / 100, max_cap);
 	}
 
@@ -1828,7 +1824,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned int         gf;
 	unsigned int         idle_cap;
 	unsigned int         hispeed_pct;
-	unsigned int         hist_snap;
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 
@@ -1850,7 +1845,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
 					hispeed_pct);
-	hist_snap = rfx_c->util_history_idx;
 	{
 		bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
 		rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util, max_cap, is_big_cluster, time);
@@ -1886,13 +1880,26 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
     }
 
 	if (!rfx_pol->tunables->gaming_mode && rfx_pol->current_mode == RFX_MODE_GAMING) {
-		unsigned int h  = rfx_c->util_history_idx;
-		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
-		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
-		if (h1 > 25 && h1 > (h2 + 10)) {
-			rfx_pol->render_urgency_active = true;
-			rfx_pol->render_boost_end_ns = time + (80 * NSEC_PER_MSEC);
-		}
+    	unsigned int h  = rfx_c->util_history_idx;
+    	unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
+    	unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
+    	unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
+
+    	bool sudden_spike    = (h1 > 30) && (h2 < 20) && (h1 > h2 + 15);
+    	bool sustained_heavy = (h1 >= 35) && (h2 >= 35) && (h3 >= 35);
+    	bool wuwa_anim       = (h1 > 25) && (h3 > 25) && (h2 < 18);
+    	bool rising          = h1 > h2 && h2 > h3 && h1 > 20;
+
+    if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
+        rfx_pol->in_heavy_mode      = true;
+        rfx_pol->gaming_lock_end_ns = time +
+            (sudden_spike || wuwa_anim ? (1200 * NSEC_PER_MSEC)
+                                       : (800  * NSEC_PER_MSEC));
+        rfx_pol->render_urgency_active = true;
+        rfx_pol->render_boost_end_ns   = time +
+            (sudden_spike || wuwa_anim ? (600 * NSEC_PER_MSEC)
+                                       : (150 * NSEC_PER_MSEC));
+    	}
 	}
 
 	if (!rfx_pol->tunables->gaming_mode) {
@@ -1905,9 +1912,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 
 	is_heavy = (rfx_c->act_state == RFX_ACT_HEAVY) || rfx_pol->in_heavy_mode ||
                (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns);
-
-	if (rfx_pol->interactive_end_ns && time < rfx_pol->interactive_end_ns)
-		act_force = false;
 
 	act_force = rfx_act_update(rfx_c, effective_util, max_cap, time, &freq_cap_khz);
 
@@ -1926,8 +1930,8 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		if (!rfx_pol->guard_end_ns) {
                         gf = rfx_pol->next_freq ? rfx_pol->next_freq : next_f;
                         if (max_cap > RFX_LITTLE_CAP_THRESHOLD) {
-                                unsigned int big_floor = rfx_adaptive_floor(
-                                        rfx_pol->policy, RFX_BIG_INTERACTIVE_FLOOR_PCT);
+                                unsigned int big_floor = rfx_adaptive_floor(policy, 75);
+                                        rfx_pol->policy, RFX_BIG_INTERACTIVE_FLOOR_PCT;
                                 if (gf < big_floor)
                                         gf = big_floor;
                         }
@@ -1947,9 +1951,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 			rfx_pol->guard_freq_khz = 0;
 		}
 	}
-
-	if (rfx_pol->interactive_end_ns && time >= rfx_pol->interactive_end_ns)
-		rfx_pol->interactive_end_ns = 0;
 
 	/* Light/Idle mode: aggressive battery saving */
 	if ((rfx_pol->in_light_mode || rfx_pol->force_idle) && !rfx_pol->in_heavy_mode &&
@@ -2134,8 +2135,8 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 		if (!rfx_pol->guard_end_ns) {
                         sgf = rfx_pol->next_freq ? rfx_pol->next_freq : next_f;
                         if (max_cap > RFX_LITTLE_CAP_THRESHOLD) {
-                                unsigned int big_floor = rfx_adaptive_floor(
-                                        rfx_pol->policy, RFX_BIG_INTERACTIVE_FLOOR_PCT);
+                                unsigned int big_floor = rfx_adaptive_floor(policy, 75);
+                                        rfx_pol->policy, RFX_BIG_INTERACTIVE_FLOOR_PCT;
                                 if (sgf < big_floor)
                                         sgf = big_floor;
                         }
@@ -2797,8 +2798,6 @@ static int rfx_start(struct cpufreq_policy *policy)
 	rfx_pol->current_mode        = RFX_MODE_NORMAL;
 	rfx_pol->mode_switch_time_ns = now;
 	rfx_pol->gaming_lock_end_ns  = 0;
-	rfx_pol->video_pattern_detected = false;
-	rfx_pol->video_detect_start_ns  = 0;
 	rfx_pol->idle_entry_time_ns  = 0;
 	rfx_pol->in_deep_idle        = false;
 	rfx_pol->game_launch_end_ns  = 0;
