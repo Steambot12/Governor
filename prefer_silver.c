@@ -510,7 +510,7 @@ static inline bool ps_check_burst_decay(struct task_struct *p)
 static inline int ps_effective_freq_thresh(void)
 {
     if (sysctl_gaming_mode_active)
-        return min(sysctl_freq_ratio_thresh + 8, 100);
+        return max(sysctl_freq_ratio_thresh - 15, 50);
     return sysctl_freq_ratio_thresh;
 }
 
@@ -559,6 +559,11 @@ int find_best_silver_cpu(struct task_struct *p)
 		return -1;
 	if (!ps_ensure_detected())
 		return -1;
+
+	if (sysctl_gaming_mode_active) {
+        atomic_inc(&ps_miss_count);
+        return -1;
+    }
 
 	if (!ps_check_uclamp(p)) {
 		atomic_inc(&ps_miss_count);
