@@ -645,14 +645,14 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 			*freq_cap_khz = RFX_LITTLE_MED_MAX_FREQ_KHZ;
 			return true;
 		case RFX_ACT_HEAVY:
-		if (rfx_pol->tunables->gaming_mode ||
-		    rfx_pol->current_mode == RFX_MODE_GAMING) {
-			*freq_cap_khz = 0;
-		} else {
-			*freq_cap_khz = RFX_LITTLE_MAX_NON_GAMING_KHZ;
-		}
-		force_down = false;
-		break;
+			if (rfx_pol->tunables->gaming_mode ||
+			    rfx_pol->current_mode == RFX_MODE_GAMING) {
+				*freq_cap_khz = 0;
+			} else {
+				*freq_cap_khz = RFX_LITTLE_MAX_NON_GAMING_KHZ;
+			}
+			force_down = false;
+			break;
 
 		}
 	}
@@ -1334,8 +1334,7 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	unsigned int util_pct;
 	bool heavy_cond;
 	bool interactive_cond;
-	bool light_cond;
-	u64  interactive_dur;
+	bool light_cond = false;
 	bool is_prime = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 	s64  idle_time;
 
@@ -1418,7 +1417,7 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	/* Interactive detection */
 	interactive_cond = (util_pct >= RFX_INTERACTIVE_UTIL_PCT);
 	if (interactive_cond) {
-		interactive_dur = is_big
+		u64 interactive_dur = is_big
 			? (rfx_pol->tunables->gaming_mode
 				? RFX_INTERACTIVE_DURATION_NS
 				: (800 * NSEC_PER_MSEC))
