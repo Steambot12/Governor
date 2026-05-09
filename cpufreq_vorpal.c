@@ -88,7 +88,7 @@ static DEFINE_MUTEX(rfx_prefer_silver_lock);
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (900 * NSEC_PER_MSEC)
+#define RFX_BURST_GUARD_NS    (800 * NSEC_PER_MSEC)
 #define RFX_BURST_DROP_THRESHOLD                  10
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
@@ -105,12 +105,12 @@ static DEFINE_MUTEX(rfx_prefer_silver_lock);
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              95
-#define RFX_BIG_GAMING_MAX_PCT          93
+#define RFX_BIG_GAMING_MAX_PCT          92
 #define RFX_PRIME_GAMING_FLOOR_PCT      88
-#define RFX_GAME_LAUNCH_FLOOR_PCT       85
-#define RFX_BIG_GAMING_FLOOR_PCT        72
+#define RFX_GAME_LAUNCH_FLOOR_PCT       82
+#define RFX_BIG_GAMING_FLOOR_PCT        70
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
-#define RFX_LITTLE_GAMING_CAP_PCT       78
+#define RFX_LITTLE_GAMING_CAP_PCT       80
 
 
 /* === LIGHT MODE - AGGRESSIVE IDLE === */
@@ -174,10 +174,10 @@ static DEFINE_MUTEX(rfx_prefer_silver_lock);
 #define RFX_THERMAL_THROTTLE_HARD_PCT   82    /* Hard cap saat headroom rendah */
 
 /* === FRAME PACING FLOOR === */
-#define RFX_FRAME_VARIANCE_THRESH       18    /* Variance di atas ini = frame tidak stabil */
-#define RFX_FRAME_FLOOR_PRIME_PCT       80   /* Floor Prime saat frame variance tinggi */
-#define RFX_FRAME_FLOOR_BIG_PCT         60    /* Floor BIG saat frame variance tinggi */
-#define RFX_FRAME_BOOST_DURATION_NS     (260 * NSEC_PER_MSEC)
+#define RFX_FRAME_VARIANCE_THRESH       20    /* Variance di atas ini = frame tidak stabil */
+#define RFX_FRAME_FLOOR_PRIME_PCT       78   /* Floor Prime saat frame variance tinggi */
+#define RFX_FRAME_FLOOR_BIG_PCT         58    /* Floor BIG saat frame variance tinggi */
+#define RFX_FRAME_BOOST_DURATION_NS     (240 * NSEC_PER_MSEC)
 
 /* === CLUSTER THRESHOLDS === */
 
@@ -519,9 +519,9 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 				rfx_pol->thermal_throttle_end_ns       = 0;
 				rfx_pol->thermal_sustain_window_count  = 0;
 
-				/* Reset prefer_silver jika hanya auto-gaming */
-				if (!rfx_pol->tunables->gaming_mode)
-					sysctl_gaming_mode_active = 0;
+			/* AUTO-GAMING sync: kembalikan prefer_silver saat game selesai */
+			if (!rfx_pol->tunables->gaming_mode)
+    			WRITE_ONCE(sysctl_gaming_mode_active, 0);
 			}
 		}
 	}
@@ -1272,25 +1272,24 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	/* Anti-drop guard – PRIME */
 	if (is_prime &&
-	    (rfx_pol->tunables->gaming_mode ||
-	     rfx_pol->current_mode == RFX_MODE_GAMING) &&
-	    !rfx_pol->thermal_throttle_active) {
-		unsigned int anti_drop_floor =
-			rfx_adaptive_floor(policy, 80);
-		if (freq < anti_drop_floor)
-			freq = anti_drop_floor;
+    	(rfx_pol->tunables->gaming_mode ||
+     	rfx_pol->current_mode == RFX_MODE_GAMING) &&
+    	!rfx_pol->thermal_throttle_active) {
+    /* manual gaming_mode = floor 82%, auto-detect = floor 78% */
+    	unsigned int floor_pct = rfx_pol->tunables->gaming_mode ? 82 : 78;
+    	unsigned int anti_drop_floor = rfx_adaptive_floor(policy, floor_pct);
+    if (freq < anti_drop_floor)
+        freq = anti_drop_floor;
 	}
-
-	/* Anti-drop guard – BIG (opsional) */
+	/* Tambahkan guard untuk BIG cluster juga */
 	if (!is_prime &&
-	    !is_little &&
-	    (rfx_pol->tunables->gaming_mode ||
-	     rfx_pol->current_mode == RFX_MODE_GAMING) &&
-	    !rfx_pol->thermal_throttle_active) {
-		unsigned int big_floor =
-			rfx_adaptive_floor(policy, 70);
-		if (freq < big_floor)
-			freq = big_floor;
+    	capacity_orig_of(policy->cpu) > (unsigned long)RFX_LITTLE_CAP_THRESHOLD &&
+    	(rfx_pol->tunables->gaming_mode ||
+     	rfx_pol->current_mode == RFX_MODE_GAMING) &&
+    	!rfx_pol->thermal_throttle_active) {
+    	unsigned int big_floor = rfx_adaptive_floor(policy, 68);
+    if (freq < big_floor)
+        freq = big_floor;
 	}
 
 	/* Freq cap dari state machine / activity state */
