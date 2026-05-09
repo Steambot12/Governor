@@ -28,10 +28,6 @@ unsigned long sysctl_big_core_guard_ns = 40000000UL;
 int           sysctl_burst_thresh      = 25;
 unsigned long sysctl_burst_decay_ns    = 80000000UL;
 
-/* Gaming mode bridge — di-set oleh vorpal governor */
-int sysctl_gaming_mode_active __read_mostly = 0;
-EXPORT_SYMBOL(sysctl_gaming_mode_active);
-
 
 /* ------------------------------------------------------------------ *
  * Per-task state cache
@@ -543,15 +539,6 @@ bool prefer_silver_check_task_util(struct task_struct *p)
 {
     int heavy = clamp(sysctl_heavy_task_thresh, 1, 100);
     return ps_task_util_pct(p) < heavy;
-}
-
-/* Longgarkan threshold silver saat gaming aktif agar task UI
- * tidak "bocor" ke BIG/Prime → lebih hemat dan Prime lebih bebas */
-static inline int ps_effective_freq_thresh(void)
-{
-    if (sysctl_gaming_mode_active)
-        return min(sysctl_freq_ratio_thresh + 8, 100);
-    return sysctl_freq_ratio_thresh;
 }
 
 /* ------------------------------------------------------------------ *
