@@ -99,7 +99,7 @@ static int rfx_saved_prefer_silver = -1;
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (14000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (10000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
@@ -145,7 +145,7 @@ static int rfx_saved_prefer_silver = -1;
 #define RFX_THERMAL_THROTTLE_BURST_NS    (500  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     86
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  78
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  72
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -469,16 +469,14 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		rfx_pol->sustain_exit_ticks = 0;
 
 		if (util_pct >= 5) {
-			rfx_pol->in_heavy_mode      = true;
-			rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
-		} else if (rfx_pol->gaming_lock_end_ns &&
-			   time < rfx_pol->gaming_lock_end_ns) {
-			rfx_pol->in_heavy_mode      = true;
-			rfx_pol->sustain_exit_ticks = 0;
-		} else {
-    		rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
-    		rfx_pol->in_heavy_mode = true;
-		}
+        	rfx_pol->in_heavy_mode      = true;
+        	rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
+    	} else if (rfx_pol->gaming_lock_end_ns &&
+               time < rfx_pol->gaming_lock_end_ns) {
+        	rfx_pol->in_heavy_mode = true;
+    	} else {
+        	rfx_pol->in_heavy_mode = false;
+    	}
 
 		if (rfx_pol->policy) {
 			unsigned long cap = arch_scale_cpu_capacity(
@@ -1004,22 +1002,21 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	/* LITTLE cluster: strict cap when non-gaming */
 	if (is_little) {
-    if (!rfx_pol->in_heavy_mode &&
-        !rfx_pol->tunables->gaming_mode &&
-        !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
+    	if (!rfx_pol->in_heavy_mode &&
+        	!rfx_pol->tunables->gaming_mode &&
+        	!(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
         /* Non-gaming: cap ketat */
         unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 72);
         if (freq > little_nongaming_cap)
             freq = little_nongaming_cap;
-    } else if (rfx_pol->tunables->gaming_mode) {
-        /* Gaming mode ON: cap di 85% tapi ada floor 30% supaya tidak spike */
-        unsigned int gaming_cap   = rfx_adaptive_max(policy, RFX_LITTLE_GAMING_CAP_PCT);
-        unsigned int gaming_floor = rfx_adaptive_floor(policy, 30);
-        if (freq > gaming_cap)
-            freq = gaming_cap;
-        if (freq < gaming_floor)
-            freq = gaming_floor;
-    	}
+    	if (is_little && rfx_pol->tunables->gaming_mode) {
+    	unsigned int gaming_cap   = rfx_adaptive_max(policy, RFX_LITTLE_GAMING_CAP_PCT);
+    	unsigned int gaming_floor = rfx_adaptive_floor(policy, 30);
+    	if (freq > gaming_cap)
+        	freq = gaming_cap;
+    	if (freq < gaming_floor)
+        	freq = gaming_floor;
+		}
 	}
 
 	if (is_prime && freq < rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT)) {
