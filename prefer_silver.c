@@ -18,7 +18,7 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 45;
+int sysctl_heavy_task_thresh = 35;
 int sysctl_cpu_util_thresh   = 78;
 int sysctl_freq_ratio_thresh = 95;
 int sysctl_gaming_mode_active __read_mostly = 0;
