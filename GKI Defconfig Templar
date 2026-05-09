@@ -561,7 +561,7 @@ CONFIG_RELOCATABLE=y
 CONFIG_RANDOMIZE_BASE=y
 # CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
 # CONFIG_STACKPROTECTOR_PER_TASK is not set
-CONFIG_CMDLINE="stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup_disable=pressure cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 thermal.off=0 thermal_step_size=3 thermal.polling_delay=250 rcu_nocbs=0-7 rcu_nocb_poll rcupdate.rcu_lazy_ms=1000 rcupdate.rcu_idle_gp_delay=3 nohz=on timer_migration=1 transparent_hugepage=madvise cpuidle.off=0 cpuidle.promotion=2 cpuidle.demotion=4 thermal_pressure=1 pm_async_timeout=30000 workqueue.power_efficient=1 sched_util_clamp_min_rt_default=0 sched_util_clamp_min=0 sched_min_granularity_ns=500000 sched_wakeup_granularity_ns=750000 sched_migration_cost_ns=400000 sched_nr_migrate=8 page_alloc.shuffle=1 cpufreq.default_governor=vorpal"
+CONFIG_CMDLINE="stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup_disable=pressure cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 thermal.off=0 thermal_step_size=3 thermal.polling_delay=250 rcu_nocbs=0-7 rcu_nocb_poll rcupdate.rcu_lazy_ms=1000 rcupdate.rcu_idle_gp_delay=3 nohz=on timer_migration=1 transparent_hugepage=madvise cpuidle.off=0 cpuidle.promotion=2 cpuidle.demotion=4 thermal_pressure=1 pm_async_timeout=30000 workqueue.power_efficient=1 sched_util_clamp_min_rt_default=0 sched_util_clamp_min=0 sched_min_granularity_ns=400000 sched_wakeup_granularity_ns=600000 sched_migration_cost_ns=400000 sched_nr_migrate=16 page_alloc.shuffle=1 cpufreq.default_governor=vorpal"
 # end of Kernel Features
 
 #
@@ -641,10 +641,10 @@ CONFIG_ARM_PSCI_CPUIDLE_DOMAIN=y
 CONFIG_NTSYNC=y
 CONFIG_CPU_BOOST=y
 CONFIG_CPU_INPUT_BOOST=y
-CONFIG_CPU_INPUT_BOOST_FREQ_LP=960000
-CONFIG_CPU_INPUT_BOOST_FREQ_PERF=1804800
-CONFIG_CPU_INPUT_BOOST_FREQ_PRIME=2208000
-CONFIG_CPU_INPUT_BOOST_DURATION_MS=140
+CONFIG_CPU_INPUT_BOOST_FREQ_LP=1036800
+CONFIG_CPU_INPUT_BOOST_FREQ_PERF=1939200
+CONFIG_CPU_INPUT_BOOST_FREQ_PRIME=2342400
+CONFIG_CPU_INPUT_BOOST_DURATION_MS=180
 CONFIG_CPU_FREQ_POWER_SAVE_BIAS=5
 CONFIG_CPU_FREQ_ADAPTIVE_THRESHOLD=y
 CONFIG_CPU_FREQ_IDLE_DETECTION=y
@@ -3222,10 +3222,10 @@ CONFIG_HISI_THERMAL=y
 # CONFIG_SUN8I_THERMAL is not set
 # CONFIG_GENERIC_ADC_THERMAL is not set
 CONFIG_THERMAL_TRIPS=4
-CONFIG_THERMAL_ZONE0_TRIP0_TEMP=42000
-CONFIG_THERMAL_ZONE0_TRIP1_TEMP=50000
-CONFIG_THERMAL_ZONE0_TRIP2_TEMP=58000
-CONFIG_THERMAL_ZONE0_TRIP3_TEMP=65000
+CONFIG_THERMAL_ZONE0_TRIP0_TEMP=47000
+CONFIG_THERMAL_ZONE0_TRIP1_TEMP=54000
+CONFIG_THERMAL_ZONE0_TRIP2_TEMP=61000
+CONFIG_THERMAL_ZONE0_TRIP3_TEMP=68000
 
 #
 # Qualcomm Thermal Drivers
