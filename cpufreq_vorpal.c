@@ -897,8 +897,8 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
 static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
 {
-    s64 delta_ns;
     s64 effective_delay;
+    s64 elapsed;
     bool going_up;
 
     if (!rfx_pol || !rfx_pol->policy)
@@ -918,27 +918,26 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
 
     going_up = (rfx_pol->next_freq > rfx_pol->policy->cur);
 
-    /* Mode-aware rate limiting */
     if (rfx_pol->force_idle) {
         effective_delay = 3 * NSEC_PER_USEC;
-         } else if (rfx_pol->in_heavy_mode ||
+    } else if (rfx_pol->in_heavy_mode ||
                rfx_pol->current_mode == RFX_MODE_GAMING ||
-               (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
+               (rfx_pol->gaming_lock_end_ns &&
+                time < rfx_pol->gaming_lock_end_ns)) {
         if (going_up) {
             effective_delay = 0;
         } else if (rfx_pol->thermal_throttle_active) {
             effective_delay = 6000 * NSEC_PER_USEC;
         } else {
-            /* PATCH: Prime saat gaming_mode=1 lebih lambat turun (2x) */
             bool is_prime_pol = (arch_scale_cpu_capacity(
                 cpumask_first(rfx_pol->policy->cpus))
                 >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 
             effective_delay = (rfx_pol->tunables->gaming_mode && is_prime_pol)
-                ? 44000 * NSEC_PER_USEC   /* 44ms — dua kali lebih lambat */
+                ? 44000 * NSEC_PER_USEC
                 : 22000 * NSEC_PER_USEC;
-        	}
         }
+    /* ↑ BRACE PENUTUP blok else-if luar ADA DI SINI */
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
         effective_delay = 25 * NSEC_PER_USEC;
     } else {
@@ -946,11 +945,11 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
     }
 
     if (going_up)
-        delta_ns = time - rfx_pol->last_upfreq_time;
+        elapsed = time - rfx_pol->last_upfreq_time;
     else
-        delta_ns = time - rfx_pol->last_downfreq_time;
+        elapsed = time - rfx_pol->last_downfreq_time;
 
-    return delta_ns >= effective_delay;
+    return elapsed >= effective_delay;
 }
 
 static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
