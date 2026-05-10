@@ -88,8 +88,8 @@ static bool rfx_sysctl_overridden;
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   30
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    12
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   22
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT    10
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     6
 #define RFX_SUSTAIN_HEAVY_TICKS        1
 #define RFX_SUSTAIN_EXIT_TICKS        12
@@ -151,14 +151,14 @@ static bool rfx_sysctl_overridden;
 /* === EWMA LOAD SMOOTHING === */
 /* Alpha dalam fixed-point Q8: 204 ≈ 0.80, 128 ≈ 0.50, 77 ≈ 0.30 */
 #define RFX_EWMA_ALPHA_DEFAULT          192   /* ≈ 0.60 — balance responsif vs smooth */
-#define RFX_EWMA_ALPHA_GAMING           204   /* ≈ 0.80 — lebih reaktif saat gaming */
+#define RFX_EWMA_ALPHA_GAMING           230   /* ≈ 0.80 — lebih reaktif saat gaming */
 #define RFX_EWMA_ALPHA_IDLE             77    /* ≈ 0.30 — sangat smooth saat idle */
 #define RFX_EWMA_SCALE                  256   /* Q8 fixed-point denominator */
 
 /* === WALT UTIL FLOOR === */
 /* Floor persen dari max_cap saat gaming mode aktif */
-#define RFX_WALT_FLOOR_GAMING_PCT       55    /* Prime: jangan turun di bawah 45% saat gaming */
-#define RFX_WALT_FLOOR_BIG_PCT          45    /* BIG: floor 30% saat gaming */
+#define RFX_WALT_FLOOR_GAMING_PCT       65    /* Prime: jangan turun di bawah 45% saat gaming */
+#define RFX_WALT_FLOOR_BIG_PCT          55    /* BIG: floor 30% saat gaming */
 #define RFX_WALT_FLOOR_DEFAULT_PCT      0     /* Normal mode: tidak ada floor */
 
 /* === THERMAL HEADROOM SOFT THROTTLE === */
@@ -169,10 +169,10 @@ static bool rfx_sysctl_overridden;
 #define RFX_THERMAL_THROTTLE_HARD_PCT   82    /* Hard cap saat headroom rendah */
 
 /* === FRAME PACING FLOOR === */
-#define RFX_FRAME_VARIANCE_THRESH       45    /* Variance di atas ini = frame tidak stabil */
-#define RFX_FRAME_FLOOR_PRIME_PCT       85   /* Floor Prime saat frame variance tinggi */
-#define RFX_FRAME_FLOOR_BIG_PCT         65    /* Floor BIG saat frame variance tinggi */
-#define RFX_FRAME_BOOST_DURATION_NS     (180 * NSEC_PER_MSEC)
+#define RFX_FRAME_VARIANCE_THRESH       18    /* Variance di atas ini = frame tidak stabil */
+#define RFX_FRAME_FLOOR_PRIME_PCT       90   /* Floor Prime saat frame variance tinggi */
+#define RFX_FRAME_FLOOR_BIG_PCT         72    /* Floor BIG saat frame variance tinggi */
+#define RFX_FRAME_BOOST_DURATION_NS     (280 * NSEC_PER_MSEC)
 
 /* === CLUSTER THRESHOLDS === */
 
@@ -187,7 +187,7 @@ static bool rfx_sysctl_overridden;
 
 #define RFX_ACT_IDLE_TO_LIGHT_PCT  4
 #define RFX_ACT_LIGHT_TO_MED_PCT  20
-#define RFX_ACT_MED_TO_HEAVY_PCT  40
+#define RFX_ACT_MED_TO_HEAVY_PCT  34
 #define RFX_ACT_HEAVY_TO_MED_PCT  22
 #define RFX_ACT_MED_TO_LIGHT_PCT   6
 #define RFX_ACT_LIGHT_TO_IDLE_PCT  3
@@ -408,7 +408,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			     unsigned long util, unsigned long max_cap, u64 time)
 {
 	unsigned int util_pct = max_cap ? util * 100 / max_cap : 0;
-	bool heavy_load       = util_pct >= 45;
+	bool heavy_load       = util_pct >= 38;
 	bool medium_load      = util_pct >= 18 && util_pct < 55;
 	bool periodic_pattern = false;
 	bool not_in_gaming;
@@ -1288,7 +1288,6 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     	(rfx_pol->tunables->gaming_mode ||
      	rfx_pol->current_mode == RFX_MODE_GAMING) &&
     	!rfx_pol->thermal_throttle_active) {
-    /* manual gaming_mode = floor 82%, auto-detect = floor 78% */
     	unsigned int floor_pct = rfx_pol->tunables->gaming_mode ? 88 : 82;
     	unsigned int anti_drop_floor = rfx_adaptive_floor(policy, floor_pct);
     if (freq < anti_drop_floor)
@@ -2602,7 +2601,10 @@ static void rfx_clear_global_tunables(void)
 /* === AUTO ROM DETECTION - Detect ROM sysctl tweaks at governor init === */
 static u8 rfx_detect_rom_tweak(void)
 {
-    int score = 0;
+	int score = 0;
+    /* Jika sweetspot sudah di-apply oleh vorpal sendiri, jangan count */
+    if (rfx_sysctl_overridden)
+        return 0;
 
     /* vm.swappiness: lower = more aggressively tuned ROM */
     if (vm_swappiness <= 5)
@@ -2696,7 +2698,12 @@ static int rfx_init(struct cpufreq_policy *policy)
 	tunables->hispeed_filter_shift = CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT;
 	tunables->hispeed_boost_pct    = CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
 	tunables->gaming_mode          = 0;
-	tunables->ewma_alpha           = RFX_EWMA_ALPHA_DEFAULT;
+	if (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD)
+    	tunables->ewma_alpha = 210;  /* lebih reaktif untuk PRIME */
+	else if (max_cap > (unsigned long)RFX_LITTLE_CAP_THRESHOLD)
+    	tunables->ewma_alpha = 200;  /* BIG sedikit lebih reaktif */
+	else
+    tunables->ewma_alpha = RFX_EWMA_ALPHA_DEFAULT;
 
 	if (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD)
     	tunables->walt_floor_pct = RFX_WALT_FLOOR_GAMING_PCT;
@@ -2705,7 +2712,7 @@ static int rfx_init(struct cpufreq_policy *policy)
 	else
     	tunables->walt_floor_pct = RFX_WALT_FLOOR_DEFAULT_PCT;
 
-	tunables->thermal_headroom_en  = 0;
+	tunables->thermal_headroom_en  = 1;
 	tunables->frame_pacing_en      = 1;
 
 	/* Auto-detect ROM tweak level at init */
