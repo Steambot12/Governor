@@ -23,6 +23,11 @@
 #include <asm/topology.h>
 #include <linux/arch_topology.h>
 
+#if defined(CONFIG_ENERGY_MODEL) && \
+    defined(CONFIG_SCHED_ENERGY_AWARE)
+#define EM_PERF_STATE_HAS_COST 1
+#endif
+
 extern int vm_swappiness;
 extern unsigned int sysctl_sched_latency;
 
@@ -80,9 +85,9 @@ extern unsigned int sysctl_sched_latency;
 /* === RATE LIMITS === */
  
 /* UI Animation protection */
-#define RFX_UI_IDLE_PROTECTION_NS   (25 * NSEC_PER_MSEC)
+#define RFX_UI_IDLE_PROTECTION_NS   (25ULL * NSEC_PER_MSEC)
 #define RFX_LITTLE_INTERACTIVE_FLOOR_KHZ  768000
-#define RFX_GAME_LAUNCH_BOOST_NS   (15000 * NSEC_PER_MSEC)
+#define RFX_GAME_LAUNCH_BOOST_NS   (15000ULL * NSEC_PER_MSEC)
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
@@ -124,12 +129,12 @@ extern unsigned int sysctl_sched_latency;
 #define IOWAIT_BOOST_MIN    (SCHED_CAPACITY_SCALE / 8)
 
 /* Half-life: Fast decay for battery */
-#define HISPEED_HALFLIFE_NS    (6 * NSEC_PER_MSEC)
+#define HISPEED_HALFLIFE_NS    (6ULL * NSEC_PER_MSEC)
 #define HISPEED_HALFLIFE_MAX                       8
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (250 * NSEC_PER_MSEC)
+#define RFX_BURST_GUARD_NS    (250ULL * NSEC_PER_MSEC)
 #define RFX_BURST_DROP_THRESHOLD                  12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
@@ -141,8 +146,8 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (12000 * NSEC_PER_MSEC)
-#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (12000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              90
@@ -161,9 +166,9 @@ extern unsigned int sysctl_sched_latency;
 
 /* === IDLE & DEEPSLEEP - <1% DRAIN TARGET === */
 
-#define RFX_IDLE_STALE_NS      (30 * NSEC_PER_MSEC)
-#define RFX_FORCE_IDLE_THRESHOLD_NS   (15 * NSEC_PER_USEC)
-#define RFX_IDLE_HYSTERESIS_NS (25 * NSEC_PER_MSEC)
+#define RFX_IDLE_STALE_NS      (30ULL * NSEC_PER_MSEC)
+#define RFX_FORCE_IDLE_THRESHOLD_NS   (15ULL * NSEC_PER_USEC)
+#define RFX_IDLE_HYSTERESIS_NS (25ULL * NSEC_PER_MSEC)
 
 /* === FREQUENCY FLOORS & CAPS - IDLE FIX === */
 
@@ -181,16 +186,16 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (14000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (11000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (800  * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS            (14000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (11000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (800ULL  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     86
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
 
 /* Extended interactive - shorter */
-#define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
-#define RFX_VIDEO_DETECT_THRESHOLD_NS (200 * NSEC_PER_MSEC)
+#define RFX_INTERACTIVE_DURATION_NS  (3000ULL * NSEC_PER_MSEC)
+#define RFX_VIDEO_DETECT_THRESHOLD_NS (200ULL * NSEC_PER_MSEC)
 #define RFX_IDLE_DEEP_CAP_KHZ_FALLBACK  300000
 
 /* === CLUSTER THRESHOLDS === */
@@ -453,11 +458,15 @@ static void rfx_update_frame_pacing(struct rfx_cpu *rfx_c,
     u8 i, consistent = 0;
     u8 cur, prev;
 
-    /* Hanya aktif saat gaming_mode=1 DAN frame_pacing_boost=1 */
     if (!rfx_pol->tunables->gaming_mode ||
         !rfx_pol->tunables->frame_pacing_boost)
         return;
 
+    /* === TAMBAHKAN: Hanya aktif untuk cluster PRIME === */
+    if (!rfx_pol->policy ||
+        !rfx_is_prime(cpumask_first(rfx_pol->policy->cpus)))
+        return;
+		
     util_pct = max_cap ? (unsigned int)(effective_util * 100 / max_cap) : 0;
 
     /* Hanya track saat ada load bermakna (filter idle noise) */
@@ -473,12 +482,17 @@ static void rfx_update_frame_pacing(struct rfx_cpu *rfx_c,
         cur  = (rfx_c->frame_ts_idx - 1 - i) & 0x7;
         prev = (rfx_c->frame_ts_idx - 2 - i) & 0x7;
 
-        /* Skip jika timestamp belum diisi (cold start) */
-        if (!rfx_c->frame_timestamps[prev])
-            break;
+		/* Guard double: prev DAN cur harus valid */
+		if (!rfx_c->frame_timestamps[prev] ||
+    		!rfx_c->frame_timestamps[cur])
+    	break;
 
-        interval = rfx_c->frame_timestamps[cur] -
-                   rfx_c->frame_timestamps[prev];
+		/* Sanity check: pastikan cur > prev (tidak wrap) */
+		if (rfx_c->frame_timestamps[cur] <= rfx_c->frame_timestamps[prev])
+    	continue;
+
+		interval = rfx_c->frame_timestamps[cur] -
+           		   rfx_c->frame_timestamps[prev];
 
         /* Cek apakah interval dalam toleransi ±2ms dari 8.333ms */
         if (interval >= (RFX_FRAME_INTERVAL_120FPS_NS - RFX_FRAME_PACING_JITTER_NS) &&
@@ -509,27 +523,36 @@ static unsigned int rfx_get_em_knee_freq(struct cpufreq_policy *policy)
 {
 #ifdef CONFIG_ENERGY_MODEL
     struct em_perf_domain *pd;
-    struct em_perf_state *ps;
     unsigned int i, knee_freq = 0;
     unsigned long min_cost = ULONG_MAX;
 
-    pd = em_cpu_get(cpumask_first(policy->cpus));
-    if (!pd)
+    if (!policy || cpumask_empty(policy->cpus))
         return 0;
 
-    /*
-     * em_perf_state.cost = power * max_freq / freq (pre-computed).
-     * Minimum cost = energy-knee = most efficient OPP.
-     */
+    pd = em_cpu_get(cpumask_first(policy->cpus));
+    if (!pd || !pd->table || pd->nr_perf_states == 0)
+        return 0;
+
     for (i = 0; i < pd->nr_perf_states; i++) {
-        ps = &pd->table[i];
-        if (ps->cost < min_cost) {
-            min_cost   = ps->cost;
-            knee_freq  = ps->frequency; /* in kHz */
+        struct em_perf_state *ps = &pd->table[i];
+        /* Gunakan field yang pasti ada di GKI 5.10 */
+        unsigned long cost_val;
+
+#if defined(EM_PERF_STATE_HAS_COST)
+        cost_val = ps->cost;
+#else
+        /* Fallback: hitung cost dari power/freq ratio */
+        cost_val = (ps->frequency > 0) ?
+                   (ps->power * 1000 / ps->frequency) : ULONG_MAX;
+#endif
+        if (cost_val < min_cost) {
+            min_cost  = cost_val;
+            knee_freq = ps->frequency; /* kHz */
         }
     }
     return knee_freq;
 #else
+    (void)policy;
     return 0;
 #endif
 }
@@ -539,21 +562,21 @@ static unsigned int rfx_apply_em_floor(struct rfx_policy *rfx_pol,
 {
     unsigned int floor_pct = rfx_pol->tunables->em_floor_pct;
     unsigned int em_floor;
+    struct cpufreq_policy *policy = rfx_pol->policy;
 
-    /* em_floor_pct=0 = fitur off */
+    /* Guard semua kondisi invalid */
     if (!floor_pct || !rfx_pol->em_knee_freq_khz)
         return freq;
-
-    /* Jangan apply saat thermal throttle aktif */
+    if (!policy || !policy->cpuinfo.max_freq)  /* <-- TAMBAHKAN INI */
+        return freq;
     if (rfx_pol->thermal_throttle_active)
         return freq;
 
-    /* Hitung floor dari knee freq */
     em_floor = (unsigned int)((u64)rfx_pol->em_knee_freq_khz *
                                floor_pct / 100);
-    em_floor = clamp_t(unsigned int, em_floor,
-                       rfx_pol->policy->cpuinfo.min_freq,
-                       rfx_pol->policy->cpuinfo.max_freq);
+    em_floor = clamp(em_floor,
+                     policy->cpuinfo.min_freq,
+                     policy->cpuinfo.max_freq);  /* clamp bukan clamp_t */
 
     return (freq < em_floor) ? em_floor : freq;
 }
@@ -654,7 +677,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		} else {
 			/* Extend hysteresis to 6s to prevent freq bounce after lock expires */
 			if (!rfx_pol->gaming_lock_end_ns ||
-			    (time - rfx_pol->gaming_lock_end_ns) > (8000 * NSEC_PER_MSEC))
+			    (time - rfx_pol->gaming_lock_end_ns) > (8000ULL * NSEC_PER_MSEC)
 				rfx_pol->in_heavy_mode = false;
 		}
 
@@ -762,8 +785,10 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
                         (u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
                 rfx_pol->cluster_last_idle_start_ns = 0;
             }
-			} else if (time - rfx_pol->force_idle_start_ns > (8 * NSEC_PER_MSEC)) {
-				rfx_pol->force_idle_start_ns = time;
+			} else {
+            /* Fallback: arm wake pulse tanpa durasi check */
+            rfx_pol->wake_pulse_end_ns = time +
+                (u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
 			}
 		}
 	}
@@ -2377,14 +2402,16 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
         	rfx_pol->prime_gaming_floor_active = false;
         	rfx_pol->prime_gaming_floor_end_ns = 0;
         	            rfx_pol->render_urgency_active   = false;
-            rfx_pol->render_boost_end_ns     = 0;
+            rfx_pol->render_boost_end_ns   = 0;
             /* v1.1 reset */
-            rfx_pol->peak_starve_count       = 0;
-            rfx_pol->peak_rescue_until_ns    = 0;
-            rfx_pol->wake_pulse_end_ns       = 0;
-            rfx_pol->migration_in_until_ns   = 0;
-            rfx_pol->peak_hyst_streak        = 0;
-            rfx_pol->peak_hyst_prev_freq     = 0;
+            rfx_pol->peak_starve_count     = 0;
+			rfx_pol->peak_rescue_until_ns  = 0;
+			rfx_pol->peak_hyst_streak      = 0;
+			rfx_pol->peak_hyst_prev_freq   = 0;
+            rfx_pol->wake_pulse_end_ns     = 0;
+            rfx_pol->migration_in_until_ns = 0;
+            rfx_pol->peak_hyst_streak      = 0;
+            rfx_pol->peak_hyst_prev_freq   = 0;
     	}
 	}
 	return count;
@@ -2791,8 +2818,17 @@ static int rfx_start(struct cpufreq_policy *policy)
     rfx_pol->peak_hyst_prev_freq        = 0;
 
     /* === v1.1: EAS energy-knee cache — komputasi sekali di start === */
-    rfx_pol->em_knee_freq_khz = rfx_get_em_knee_freq(policy);
-    rfx_pol->em_knee_valid    = (rfx_pol->em_knee_freq_khz > 0);
+	if (rfx_pol->policy &&
+    	rfx_pol->policy->cpuinfo.max_freq > 0 &&
+    	!cpumask_empty(rfx_pol->policy->cpus)) {
+    	rfx_pol->em_knee_freq_khz = rfx_get_em_knee_freq(rfx_pol->policy);
+    	rfx_pol->em_knee_valid    = (rfx_pol->em_knee_freq_khz > 0 &&
+                                  rfx_pol->em_knee_freq_khz <=
+                                  rfx_pol->policy->cpuinfo.max_freq);
+	} else {
+    	rfx_pol->em_knee_freq_khz = 0;
+    	rfx_pol->em_knee_valid    = false;
+	}
     if (rfx_pol->em_knee_valid)
         pr_info("vorpal: EM knee freq = %u kHz for policy CPU%u\n",
                 rfx_pol->em_knee_freq_khz,
@@ -2815,6 +2851,7 @@ static int rfx_start(struct cpufreq_policy *policy)
         rfx_c->frame_ts_idx           = 0;
         rfx_c->frame_pacing_score     = 0;
         rfx_c->frame_120fps_detected  = false;
+		memset(rfx_c->frame_timestamps, 0, sizeof(rfx_c->frame_timestamps));
         rfx_c->prev_util_for_migration = 0;
         rfx_c->wakeup_boost_ticks_left = 0;
 		cpufreq_add_update_util_hook(cpu, &rfx_c->update_util, uu);
