@@ -28,7 +28,54 @@ extern unsigned int sysctl_sched_latency;
 
 #define CPUFREQ_VORPAL_PROGNAME     "Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR       "Templar Dev"
-#define CPUFREQ_VORPAL_VERSION 		"1.0"
+#define CPUFREQ_VORPAL_VERSION 		"1.1"
+/* ============================================================
+ * VORPAL v1.1 NEW FEATURES
+ * ============================================================ */
+
+/* === A: FRAME PACING AWARE BOOST === */
+/* Target 120fps = 8.333ms per frame */
+#define RFX_FRAME_INTERVAL_120FPS_NS    (8333ULL * NSEC_PER_USEC)
+#define RFX_FRAME_PACING_WINDOW         6
+#define RFX_FRAME_PACING_JITTER_NS      (2000ULL * NSEC_PER_USEC)
+#define RFX_FRAME_PACING_BOOST_NS       (4000ULL * NSEC_PER_MSEC)
+#define RFX_FRAME_PACING_MIN_SCORE      4
+
+/* === B: EAS / ENERGY MODEL FLOOR === */
+/* Floor di energy-knee OPP untuk efisiensi optimal */
+#define RFX_EM_FLOOR_PCT                0   /* 0 = off by default, set via sysfs */
+#define RFX_EM_FLOOR_PCT_MAX            200
+
+/* === C1: PEAK HEADROOM RESCUE === */
+/* Rescue saat freq starvation: load tinggi tapi freq rendah */
+#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     88
+#define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      85
+#define RFX_PEAK_RESCUE_STARVE_STREAK       3
+#define RFX_PEAK_RESCUE_HOLD_NS             (50ULL * NSEC_PER_MSEC)
+#define RFX_PEAK_RESCUE_JUMP_PCT            98
+#define RFX_PEAK_RESCUE_STREAK_MAX          16
+
+/* === C2: CLUSTER WAKE PULSE === */
+/* Floor singkat saat cluster bangun dari deep idle (PELT warmup lag) */
+#define RFX_WAKE_PULSE_MS                   40
+#define RFX_WAKE_PULSE_IDLE_MS              80
+#define RFX_WAKE_PULSE_FLOOR_PCT            58
+
+/* === C3: MIGRATION FLOOR === */
+/* Floor singkat saat task baru landing dari cluster lain */
+#define RFX_MIGRATION_JUMP_PCT              22
+#define RFX_MIGRATION_FLOOR_WINDOW_NS       (30ULL * NSEC_PER_MSEC)
+#define RFX_MIGRATION_FLOOR_PCT             62
+
+/* === C4: WAKEUP BOOST === */
+/* Bypass up_rate_limit saat transisi idle→busy */
+#define RFX_WAKEUP_IDLE_THRESH_PCT           8
+#define RFX_WAKEUP_BUSY_THRESH_PCT          38
+#define RFX_WAKEUP_BOOST_TICKS               2
+
+/* === UPDATED UI TRANSITION BOOST TIMER === */
+#define RFX_UI_TRANSITION_BOOST_NS          (900ULL * NSEC_PER_MSEC)
+#define RFX_UI_TRANSITION_FLOOR_PCT          80
 
 /* === RATE LIMITS === */
  
@@ -258,7 +305,10 @@ struct rfx_tunables {
 	unsigned int		hispeed_filter_shift;
 	unsigned int		hispeed_boost_pct;
 	enum rfx_cluster_type	cluster_type;
-	unsigned int		gaming_mode;
+	unsigned int        gaming_mode;
+    /* v1.1 new tunables */
+    unsigned int        em_floor_pct;       /* EAS energy-knee floor % (0=off) */
+    unsigned int        frame_pacing_boost;
 };
 
 struct rfx_policy;
@@ -319,7 +369,26 @@ struct rfx_policy {
 	bool			render_urgency_active;
 	/* Auto ROM detection - set at init, NOT user-settable */
 	u8			rom_tweak_detected;   /* 0=stock, 1=light, 2=heavy */
-	bool			rom_override_active;
+	    bool            rom_override_active;
+
+    /* === v1.1: Peak Headroom Rescue === */
+    u8              peak_starve_count;
+    u64             peak_rescue_until_ns;
+
+    /* === v1.1: Cluster Wake Pulse === */
+    u64             wake_pulse_end_ns;
+    u64             cluster_last_idle_start_ns;
+
+    /* === v1.1: Migration Floor === */
+    u64             migration_in_until_ns;
+
+    /* === v1.1: EAS energy-knee freq cache === */
+    unsigned int    em_knee_freq_khz;       /* cached di rfx_start() */
+    bool            em_knee_valid;
+
+    /* === v1.1: Peak Hysteresis === */
+    u8              peak_hyst_streak;
+    unsigned int    peak_hyst_prev_freq;
 };
 
 struct rfx_cpu {
@@ -345,7 +414,18 @@ struct rfx_cpu {
 	unsigned int		util_history[8];
 	u8			util_history_idx;
 	bool			is_video_pattern;
-	bool			is_gaming_pattern;
+	bool            is_gaming_pattern;
+
+    /* === v1.1: Frame Pacing Detector === */
+    u64             frame_timestamps[8];
+    u8              frame_ts_idx;
+    u8              frame_pacing_score;
+    bool            frame_120fps_detected;
+
+    /* === v1.1: Migration & Wakeup === */
+    unsigned int    prev_util_for_migration;
+    u8              wakeup_boost_ticks_left;
+
 #ifdef CONFIG_NO_HZ_COMMON
 	unsigned long		saved_idle_calls;
 #endif
@@ -356,6 +436,173 @@ static DEFINE_PER_CPU(struct rfx_cpu, rfx_cpu);
 static inline struct rfx_tunables *to_rfx_tunables(struct gov_attr_set *attr_set)
 {
 	return container_of(attr_set, struct rfx_tunables, attr_set);
+}
+
+/* ============================================================
+ * FRAME PACING AWARE BOOST (v1.1)
+ * Mendeteksi pola frame 120fps dan memperpanjang gaming lock
+ * secara proaktif sebelum util drops terdeteksi.
+ * ============================================================ */
+static void rfx_update_frame_pacing(struct rfx_cpu *rfx_c,
+                                     struct rfx_policy *rfx_pol,
+                                     unsigned long effective_util,
+                                     unsigned long max_cap, u64 time)
+{
+    unsigned int util_pct;
+    u64 interval;
+    u8 i, consistent = 0;
+    u8 cur, prev;
+
+    /* Hanya aktif saat gaming_mode=1 DAN frame_pacing_boost=1 */
+    if (!rfx_pol->tunables->gaming_mode ||
+        !rfx_pol->tunables->frame_pacing_boost)
+        return;
+
+    util_pct = max_cap ? (unsigned int)(effective_util * 100 / max_cap) : 0;
+
+    /* Hanya track saat ada load bermakna (filter idle noise) */
+    if (util_pct < 15)
+        return;
+
+    /* Simpan timestamp tick ini */
+    rfx_c->frame_timestamps[rfx_c->frame_ts_idx] = time;
+    rfx_c->frame_ts_idx = (rfx_c->frame_ts_idx + 1) & 0x7;
+
+    /* Hitung konsistensi interval 120fps dalam window terakhir */
+    for (i = 0; i < RFX_FRAME_PACING_WINDOW; i++) {
+        cur  = (rfx_c->frame_ts_idx - 1 - i) & 0x7;
+        prev = (rfx_c->frame_ts_idx - 2 - i) & 0x7;
+
+        /* Skip jika timestamp belum diisi (cold start) */
+        if (!rfx_c->frame_timestamps[prev])
+            break;
+
+        interval = rfx_c->frame_timestamps[cur] -
+                   rfx_c->frame_timestamps[prev];
+
+        /* Cek apakah interval dalam toleransi ±2ms dari 8.333ms */
+        if (interval >= (RFX_FRAME_INTERVAL_120FPS_NS - RFX_FRAME_PACING_JITTER_NS) &&
+            interval <= (RFX_FRAME_INTERVAL_120FPS_NS + RFX_FRAME_PACING_JITTER_NS))
+            consistent++;
+    }
+
+    if (consistent >= RFX_FRAME_PACING_MIN_SCORE) {
+        /* Pola 120fps terdeteksi: perpanjang gaming lock proaktif */
+        rfx_c->frame_120fps_detected = true;
+        rfx_c->frame_pacing_score    = consistent;
+        rfx_pol->gaming_lock_end_ns  = time + RFX_FRAME_PACING_BOOST_NS;
+        rfx_pol->in_heavy_mode       = true;
+    } else if (consistent < 2) {
+        /* Pola tidak konsisten: reset */
+        rfx_c->frame_120fps_detected = false;
+        rfx_c->frame_pacing_score    = 0;
+    }
+    /* else: hysteresis — pertahankan status saat ini (consistent 2-3) */
+}
+
+/* ============================================================
+ * EAS ENERGY MODEL FLOOR (v1.1)
+ * Membaca energy-knee OPP dari EM dan menerapkan freq floor.
+ * Gated pada CONFIG_ENERGY_MODEL; no-op jika EM tidak tersedia.
+ * ============================================================ */
+static unsigned int rfx_get_em_knee_freq(struct cpufreq_policy *policy)
+{
+#ifdef CONFIG_ENERGY_MODEL
+    struct em_perf_domain *pd;
+    struct em_perf_state *ps;
+    unsigned int i, knee_freq = 0;
+    unsigned long min_cost = ULONG_MAX;
+
+    pd = em_cpu_get(cpumask_first(policy->cpus));
+    if (!pd)
+        return 0;
+
+    /*
+     * em_perf_state.cost = power * max_freq / freq (pre-computed).
+     * Minimum cost = energy-knee = most efficient OPP.
+     */
+    for (i = 0; i < pd->nr_perf_states; i++) {
+        ps = &pd->table[i];
+        if (ps->cost < min_cost) {
+            min_cost   = ps->cost;
+            knee_freq  = ps->frequency; /* in kHz */
+        }
+    }
+    return knee_freq;
+#else
+    return 0;
+#endif
+}
+
+static unsigned int rfx_apply_em_floor(struct rfx_policy *rfx_pol,
+                                        unsigned int freq, u64 time)
+{
+    unsigned int floor_pct = rfx_pol->tunables->em_floor_pct;
+    unsigned int em_floor;
+
+    /* em_floor_pct=0 = fitur off */
+    if (!floor_pct || !rfx_pol->em_knee_freq_khz)
+        return freq;
+
+    /* Jangan apply saat thermal throttle aktif */
+    if (rfx_pol->thermal_throttle_active)
+        return freq;
+
+    /* Hitung floor dari knee freq */
+    em_floor = (unsigned int)((u64)rfx_pol->em_knee_freq_khz *
+                               floor_pct / 100);
+    em_floor = clamp_t(unsigned int, em_floor,
+                       rfx_pol->policy->cpuinfo.min_freq,
+                       rfx_pol->policy->cpuinfo.max_freq);
+
+    return (freq < em_floor) ? em_floor : freq;
+}
+
+/* ============================================================
+ * PEAK HEADROOM RESCUE (v1.1 — ported dari Zenith V4)
+ * Rescue freq saat starvation: load >= 88% tapi freq < 85% max
+ * selama 3 tick berturut-turut. Lift ke 98% max dan hold 50ms.
+ * ============================================================ */
+static unsigned int rfx_peak_headroom_rescue(struct rfx_policy *rfx_pol,
+                                              unsigned int freq,
+                                              unsigned int util_pct,
+                                              u64 time)
+{
+    struct cpufreq_policy *policy = rfx_pol->policy;
+    unsigned int floor_freq, rescue_freq;
+
+    /* Hanya untuk gaming_mode=1 */
+    if (!rfx_pol->tunables->gaming_mode)
+        return freq;
+
+    /* Jika masih dalam rescue hold-down, langsung return rescue freq */
+    if (rfx_pol->peak_rescue_until_ns &&
+        time < rfx_pol->peak_rescue_until_ns) {
+        rescue_freq = rfx_adaptive_max(policy, RFX_PEAK_RESCUE_JUMP_PCT);
+        return (freq < rescue_freq) ? rescue_freq : freq;
+    }
+
+    floor_freq = rfx_adaptive_max(policy, RFX_PEAK_RESCUE_FREQ_FLOOR_PCT);
+
+    /* Akumulasi streak saat starvation terdeteksi */
+    if (util_pct >= RFX_PEAK_RESCUE_STARVE_LOAD_PCT &&
+        freq < floor_freq) {
+        rfx_pol->peak_starve_count++;
+        if (rfx_pol->peak_starve_count > RFX_PEAK_RESCUE_STREAK_MAX)
+            rfx_pol->peak_starve_count = RFX_PEAK_RESCUE_STREAK_MAX;
+    } else {
+        rfx_pol->peak_starve_count = 0;
+    }
+
+    /* Trigger rescue setelah streak terpenuhi */
+    if (rfx_pol->peak_starve_count >= RFX_PEAK_RESCUE_STARVE_STREAK) {
+        rescue_freq = rfx_adaptive_max(policy, RFX_PEAK_RESCUE_JUMP_PCT);
+        rfx_pol->peak_rescue_until_ns = time + RFX_PEAK_RESCUE_HOLD_NS;
+        rfx_pol->peak_starve_count    = 0;
+        return rescue_freq;
+    }
+
+    return freq;
 }
 
 /* === MODE DETECTION - SMART TASK DETECT - TUNED === */
@@ -397,7 +644,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		rfx_pol->force_idle         = false;
 		rfx_pol->sustain_exit_ticks = 0;
 
-		if (util_pct >= 5) {
+		if (util_pct >= 3) {
 			rfx_pol->in_heavy_mode      = true;
 			rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
 		} else if (rfx_pol->gaming_lock_end_ns &&
@@ -407,7 +654,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		} else {
 			/* Extend hysteresis to 6s to prevent freq bounce after lock expires */
 			if (!rfx_pol->gaming_lock_end_ns ||
-			    (time - rfx_pol->gaming_lock_end_ns) > (6000 * NSEC_PER_MSEC))
+			    (time - rfx_pol->gaming_lock_end_ns) > (8000 * NSEC_PER_MSEC))
 				rfx_pol->in_heavy_mode = false;
 		}
 
@@ -501,11 +748,20 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 			if (!rfx_pol->in_deep_idle) {
 				rfx_pol->idle_entry_time_ns = time;
 				rfx_pol->in_deep_idle = true;
+				rfx_pol->cluster_last_idle_start_ns = time;
 			}
 		} else if (rfx_pol->force_idle) {
 			if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
 				rfx_pol->force_idle = false;
 				rfx_pol->in_deep_idle = false;
+				/* v1.1: Arm wake pulse saat cluster exit dari deep idle */
+            if (rfx_pol->cluster_last_idle_start_ns) {
+                u64 idle_dur = time - rfx_pol->cluster_last_idle_start_ns;
+                if (idle_dur >= (u64)(RFX_WAKE_PULSE_IDLE_MS * NSEC_PER_MSEC))
+                    rfx_pol->wake_pulse_end_ns = time +
+                        (u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
+                rfx_pol->cluster_last_idle_start_ns = 0;
+            }
 			} else if (time - rfx_pol->force_idle_start_ns > (8 * NSEC_PER_MSEC)) {
 				rfx_pol->force_idle_start_ns = time;
 			}
@@ -812,7 +1068,17 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
         return true;
     }
 
-    going_up = (rfx_pol->next_freq > rfx_pol->policy->cur);
+        going_up = (rfx_pol->next_freq > rfx_pol->policy->cur);
+
+    /* === v1.1: Wakeup Boost — bypass up_rate_limit saat transisi idle→busy === */
+    if (going_up) {
+        struct rfx_cpu *wc = per_cpu_ptr(&rfx_cpu,
+            cpumask_first(rfx_pol->policy->cpus));
+        if (wc->wakeup_boost_ticks_left > 0) {
+            wc->wakeup_boost_ticks_left--;
+            return true;
+        }
+    }
 
     /* Mode-aware rate limiting */
     if (rfx_pol->force_idle) {
@@ -1011,12 +1277,10 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	}
 
 
-	if (rfx_pol->render_urgency_active && rfx_pol->render_boost_end_ns &&
-	    time < rfx_pol->render_boost_end_ns) {
-		if (is_prime && freq < rfx_adaptive_floor(policy, 85))  /* was 75 — stronger render boost */
-			freq = rfx_adaptive_floor(policy, 85);
-		else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 78))
-        	freq = rfx_adaptive_floor(policy, 78);
+	    if (is_prime && freq < rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT))
+            freq = rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT);
+        else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 78))
+            freq = rfx_adaptive_floor(policy, 78);
 	}
 
 	if (rfx_pol->in_heavy_mode &&
@@ -1041,7 +1305,27 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     		freq = rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT);
 	}
 
-	/* Interactive floor - LOWER for cooler idle */
+    /* === v1.1: Cluster Wake Pulse Floor === */
+    if (!rfx_pol->in_heavy_mode && !rfx_pol->force_idle &&
+        rfx_pol->wake_pulse_end_ns && time < rfx_pol->wake_pulse_end_ns) {
+        unsigned int pulse_floor = rfx_adaptive_max(policy, RFX_WAKE_PULSE_FLOOR_PCT);
+        if (freq < pulse_floor)
+            freq = pulse_floor;
+    }
+
+    /* === v1.1: Migration Floor === */
+    if (!rfx_pol->in_heavy_mode && !rfx_pol->force_idle &&
+        rfx_pol->migration_in_until_ns &&
+        time < rfx_pol->migration_in_until_ns) {
+        unsigned int mig_floor = rfx_adaptive_max(policy, RFX_MIGRATION_FLOOR_PCT);
+        if (freq < mig_floor)
+            freq = mig_floor;
+    }
+
+    /* === v1.1: EAS Energy Model Floor === */
+    freq = rfx_apply_em_floor(rfx_pol, freq, time);
+
+    /* Interactive floor - LOWER for cooler idle */
 	if (!rfx_pol->in_heavy_mode &&
 	    rfx_pol->interactive_end_ns && time < rfx_pol->interactive_end_ns) {
 		struct rfx_cpu *lc = per_cpu_ptr(&rfx_cpu,
@@ -1070,8 +1354,35 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	if (freq == rfx_pol->cached_raw_freq && !rfx_pol->need_freq_update)
 		return rfx_pol->next_freq;
 
-	rfx_pol->cached_raw_freq = freq;
-	return cpufreq_driver_resolve_freq(policy, freq);
+    /* === v1.1: Peak Headroom Rescue (gaming_mode only) === */
+    if (!rfx_pol->force_idle && rfx_pol->in_heavy_mode) {
+        unsigned int rescue_util_pct = max ?
+            (unsigned int)(util * 100 / max) : 0;
+        freq = rfx_peak_headroom_rescue(rfx_pol, freq, rescue_util_pct, time);
+    }
+
+    /* === v1.1: Peak Hysteresis — smooth descent dari peak === */
+    if (!rfx_pol->in_heavy_mode && !rfx_pol->force_idle) {
+        unsigned int peak_thresh = rfx_adaptive_max(policy, 90);
+        if (rfx_pol->peak_hyst_prev_freq >= peak_thresh &&
+            freq < rfx_pol->peak_hyst_prev_freq) {
+            if (rfx_pol->peak_hyst_streak < 3) {
+                unsigned int soft_floor = rfx_pol->peak_hyst_prev_freq * 94 / 100;
+                if (freq < soft_floor) {
+                    freq = soft_floor;
+                    rfx_pol->peak_hyst_streak++;
+                }
+            } else {
+                rfx_pol->peak_hyst_streak = 0;
+            }
+        } else {
+            rfx_pol->peak_hyst_streak = 0;
+        }
+        rfx_pol->peak_hyst_prev_freq = freq;
+    }
+
+    rfx_pol->cached_raw_freq = freq;
+    return cpufreq_driver_resolve_freq(policy, freq);
 }
 
 static void rfx_get_util(struct rfx_cpu *rfx_c, unsigned long boost)
@@ -1549,6 +1860,28 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util, max_cap, is_big_cluster, time);
 	}
 
+	    /* === v1.1: Frame Pacing Aware Boost === */
+    rfx_update_frame_pacing(rfx_c, rfx_pol, effective_util, max_cap, time);
+
+    /* === v1.1: Migration Detection === */
+    {
+        unsigned int util_now = max_cap ?
+            (unsigned int)(effective_util * 100 / max_cap) : 0;
+        int jump = (int)util_now - (int)rfx_c->prev_util_for_migration;
+        if (jump > (int)RFX_MIGRATION_JUMP_PCT && !rfx_pol->in_heavy_mode)
+            rfx_pol->migration_in_until_ns = time + RFX_MIGRATION_FLOOR_WINDOW_NS;
+        rfx_c->prev_util_for_migration = util_now;
+    }
+
+    /* === v1.1: Wakeup Boost — deteksi idle→busy transition === */
+    {
+        unsigned int cur_util_pct = max_cap ?
+            (unsigned int)(effective_util * 100 / max_cap) : 0;
+        if (rfx_c->prev_util_pct < RFX_WAKEUP_IDLE_THRESH_PCT &&
+            cur_util_pct >= RFX_WAKEUP_BUSY_THRESH_PCT)
+            rfx_c->wakeup_boost_ticks_left = RFX_WAKEUP_BOOST_TICKS;
+    }
+
 		if (rfx_pol->tunables->gaming_mode) {
 		unsigned int h  = rfx_c->util_history_idx;
 		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
@@ -1569,7 +1902,9 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
         		(sudden_spike || wuwa_anim ? (1200 * NSEC_PER_MSEC) : (800 * NSEC_PER_MSEC));
     		rfx_pol->render_urgency_active = true;
     		rfx_pol->render_boost_end_ns = time +
-        		(sudden_spike || wuwa_anim ? (600 * NSEC_PER_MSEC) : (150 * NSEC_PER_MSEC));
+                (sudden_spike || wuwa_anim
+                    ? RFX_UI_TRANSITION_BOOST_NS        /* v1.1: 600ms → 900ms */
+                    : (300ULL * NSEC_PER_MSEC));
 		}
 	}
 
@@ -2036,8 +2371,15 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
         	rfx_pol->game_launch_end_ns      = 0;
         	rfx_pol->prime_gaming_floor_active = false;
         	rfx_pol->prime_gaming_floor_end_ns = 0;
-        	rfx_pol->render_urgency_active   = false;
-        	rfx_pol->render_boost_end_ns     = 0;
+        	            rfx_pol->render_urgency_active   = false;
+            rfx_pol->render_boost_end_ns     = 0;
+            /* v1.1 reset */
+            rfx_pol->peak_starve_count       = 0;
+            rfx_pol->peak_rescue_until_ns    = 0;
+            rfx_pol->wake_pulse_end_ns       = 0;
+            rfx_pol->migration_in_until_ns   = 0;
+            rfx_pol->peak_hyst_streak        = 0;
+            rfx_pol->peak_hyst_prev_freq     = 0;
     	}
 	}
 	return count;
@@ -2048,6 +2390,10 @@ static struct governor_attr gaming_mode =
 RFX_TUNABLE_UINT(hispeed_window_us);
 RFX_TUNABLE_UINT(hispeed_filter_shift);
 
+/* === v1.1 new sysfs tunables === */
+RFX_TUNABLE_UINT(em_floor_pct);
+RFX_TUNABLE_UINT(frame_pacing_boost);
+
 static struct attribute *rfx_little_attrs[] = {
 	&hispeed_boost_pct.attr,
 	&rate_limit_us.attr,
@@ -2056,23 +2402,26 @@ static struct attribute *rfx_little_attrs[] = {
 ATTRIBUTE_GROUPS(rfx_little);
 
 static struct attribute *rfx_big_attrs[] = {
-	&down_rate_limit_us.attr,
-	&hispeed_boost_pct.attr,
-	&hispeed_filter_shift.attr,
-	&rate_limit_us.attr,
-	&gaming_mode.attr,
-	NULL
+    &down_rate_limit_us.attr,
+    &hispeed_boost_pct.attr,
+    &hispeed_filter_shift.attr,
+    &rate_limit_us.attr,
+    &gaming_mode.attr,
+    &frame_pacing_boost.attr,   /* v1.1: frame pacing */
+    NULL
 };
 ATTRIBUTE_GROUPS(rfx_big);
 
 static struct attribute *rfx_prime_attrs[] = {
-	&hispeed_boost_pct.attr,
-	&hispeed_filter_shift.attr,
-	&hispeed_window_us.attr,
-	&rate_limit_us.attr,
-	&up_rate_limit_us.attr,
-	&gaming_mode.attr,
-	NULL
+    &hispeed_boost_pct.attr,
+    &hispeed_filter_shift.attr,
+    &hispeed_window_us.attr,
+    &rate_limit_us.attr,
+    &up_rate_limit_us.attr,
+    &gaming_mode.attr,
+    &em_floor_pct.attr,         /* v1.1: EAS floor */
+    &frame_pacing_boost.attr,   /* v1.1: frame pacing */
+    NULL
 };
 ATTRIBUTE_GROUPS(rfx_prime);
 
@@ -2277,9 +2626,12 @@ static int rfx_init(struct cpufreq_policy *policy)
 	}
 
 	tunables->hispeed_window_us    = CPUFREQ_VORPAL_DEFAULT_HISPEED_WINDOW_US;
-	tunables->hispeed_filter_shift = CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT;
-	tunables->hispeed_boost_pct    = CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
-	tunables->gaming_mode          = 0;
+    tunables->hispeed_filter_shift = CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT;
+    tunables->hispeed_boost_pct    = CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
+    tunables->gaming_mode          = 0;
+    /* v1.1 defaults */
+    tunables->em_floor_pct         = 0;   /* off by default, opt-in */
+    tunables->frame_pacing_boost   = 0;   /* off by default, enable saat gaming */
 
 	/* Auto-detect ROM tweak level at init */
 	rfx_pol->rom_tweak_detected  = rfx_detect_rom_tweak();
@@ -2421,8 +2773,25 @@ static int rfx_start(struct cpufreq_policy *policy)
 	rfx_pol->thermal_throttle_active       = false;
 	rfx_pol->thermal_sustain_window_count  = 0;
 	rfx_pol->thermal_duty_last_active_ns   = 0;
-	rfx_pol->render_urgency_active = false;
-	rfx_pol->render_boost_end_ns   = 0;
+	    rfx_pol->render_urgency_active = false;
+    rfx_pol->render_boost_end_ns   = 0;
+
+    /* === v1.1: Init new fields === */
+    rfx_pol->peak_starve_count          = 0;
+    rfx_pol->peak_rescue_until_ns       = 0;
+    rfx_pol->wake_pulse_end_ns          = 0;
+    rfx_pol->cluster_last_idle_start_ns = 0;
+    rfx_pol->migration_in_until_ns      = 0;
+    rfx_pol->peak_hyst_streak           = 0;
+    rfx_pol->peak_hyst_prev_freq        = 0;
+
+    /* === v1.1: EAS energy-knee cache — komputasi sekali di start === */
+    rfx_pol->em_knee_freq_khz = rfx_get_em_knee_freq(policy);
+    rfx_pol->em_knee_valid    = (rfx_pol->em_knee_freq_khz > 0);
+    if (rfx_pol->em_knee_valid)
+        pr_info("vorpal: EM knee freq = %u kHz for policy CPU%u\n",
+                rfx_pol->em_knee_freq_khz,
+                cpumask_first(policy->cpus));
 
 	uu = policy_is_shared(policy) ? rfx_update_shared : rfx_update_single_freq;
 
@@ -2434,8 +2803,15 @@ static int rfx_start(struct cpufreq_policy *policy)
 		rfx_c->act_state  = RFX_ACT_IDLE;
 		rfx_c->prev_idle_time = get_cpu_idle_time(cpu, &rfx_c->prev_wall_time, 1);
 		rfx_c->util_history_idx = 0;
-		for (i = 0; i < 8; i++)
-			rfx_c->util_history[i] = 0;
+        for (i = 0; i < 8; i++)
+            rfx_c->util_history[i] = 0;
+        /* v1.1 init */
+        memset(rfx_c->frame_timestamps, 0, sizeof(rfx_c->frame_timestamps));
+        rfx_c->frame_ts_idx           = 0;
+        rfx_c->frame_pacing_score     = 0;
+        rfx_c->frame_120fps_detected  = false;
+        rfx_c->prev_util_for_migration = 0;
+        rfx_c->wakeup_boost_ticks_left = 0;
 		cpufreq_add_update_util_hook(cpu, &rfx_c->update_util, uu);
 	}
 	return 0;
@@ -2501,7 +2877,7 @@ static int __init vorpal_gov_init(void)
 {
 	pr_info("%s %s by %s\n", CPUFREQ_VORPAL_PROGNAME,
 		CPUFREQ_VORPAL_VERSION, CPUFREQ_VORPAL_AUTHOR);
-	pr_info("Gaming<43C | Idle<1%% | ThermalProactive | RenderUrgency | AdaptiveROM\n");
+	pr_info("Gaming<43C | FramePacing120fps | EAS-Floor | PeakRescue | WakePulse | UI900ms\n");
 	return cpufreq_register_governor(&vorpal_gov);
 }
 
