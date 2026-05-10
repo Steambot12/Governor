@@ -2423,7 +2423,31 @@ RFX_TUNABLE_UINT(hispeed_window_us);
 RFX_TUNABLE_UINT(hispeed_filter_shift);
 
 /* === v1.1 new sysfs tunables === */
-RFX_TUNABLE_UINT(em_floor_pct);
+/* === CUSTOM HANDLER: em_floor_pct (dengan clamp validasi) === */
+static ssize_t em_floor_pct_show(struct gov_attr_set *attr_set, char *buf)
+{
+    return sprintf(buf, "%u\n", to_rfx_tunables(attr_set)->em_floor_pct);
+}
+static ssize_t em_floor_pct_store(struct gov_attr_set *attr_set,
+                                   const char *buf, size_t count)
+{
+    struct rfx_tunables *t = to_rfx_tunables(attr_set);
+    unsigned int val;
+
+    if (kstrtouint(buf, 10, &val))
+        return -EINVAL;
+
+    /* Clamp ke batas maksimum yang aman */
+    if (val > RFX_EM_FLOOR_PCT_MAX)
+        val = RFX_EM_FLOOR_PCT_MAX;
+
+    t->em_floor_pct = val;
+    return count;
+}
+static struct governor_attr em_floor_pct =
+    __ATTR(em_floor_pct, 0644, em_floor_pct_show, em_floor_pct_store);
+
+/* frame_pacing_boost tetap pakai macro — cukup 0 atau 1 */
 RFX_TUNABLE_UINT(frame_pacing_boost);
 
 static struct attribute *rfx_little_attrs[] = {
