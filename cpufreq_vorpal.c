@@ -973,13 +973,22 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
         	s64 effective_down_delay = rfx_pol->down_rate_delay_ns;
 
  		if (rfx_pol->in_heavy_mode ||
-    		rfx_pol->current_mode == RFX_MODE_GAMING ||
-    		(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
-    		if (rfx_pol->thermal_throttle_active)
-        		effective_down_delay = 6000 * NSEC_PER_USEC;
-    		else
-        		effective_down_delay = 35000 * NSEC_PER_USEC;
-		}
+    		rfx_pol->current_mode == RFX_MODE_GAMING || ...) {
+    	if (rfx_pol->thermal_throttle_active)
+        	effective_down_delay = 6000 * NSEC_PER_USEC;
+    	else {
+        bool is_prime_pol = (arch_scale_cpu_capacity(
+            cpumask_first(rfx_pol->policy->cpus))
+            >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
+
+        /* gaming_mode=1 PRIME: 50ms — cukup untuk ~6 frame @ 120fps */
+        /* gaming_mode=1 BIG / auto-gaming: 30ms */
+        if (rfx_pol->tunables->gaming_mode && is_prime_pol)
+            effective_down_delay = 50000 * NSEC_PER_USEC;
+        else
+            effective_down_delay = 30000 * NSEC_PER_USEC;
+    	}
+	}
 
         if (effective_down_delay > 0 &&
             down_delta < effective_down_delay)
@@ -2322,44 +2331,51 @@ static ssize_t gaming_mode_show(struct gov_attr_set *attr_set, char *buf)
 }
 
 static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
-                const char *buf, size_t count)
+                                  const char *buf, size_t count)
 {
-    struct rfx_tunables *t = to_rfx_tunables(attr_set);
+    struct vorpal_tunables *tunables = to_vorpal_tunables(attr_set);
     struct rfx_policy *rfx_pol;
     unsigned int val;
 
-    if (kstrtouint(buf, 10, &val))
-        return -EINVAL;
-    if (val > 1)
+    if (kstrtouint(buf, 10, &val) || (val != 0 && val != 1))
         return -EINVAL;
 
-    t->gaming_mode = val;
+    tunables->gaming_mode = val;
 
-    /* HANYA update state vorpal sendiri */
-    list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
-        if (val) {
-            rfx_pol->current_mode                = RFX_MODE_GAMING;
-            rfx_pol->mode_switch_time_ns         = ktime_get_ns();
+    if (val) {
+        /* ── Patch 1: set state machine langsung ke GAMING ── */
+        list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
+            u64 now = ktime_get_ns();
+            rfx_pol->current_mode             = RFX_MODE_GAMING;
+            rfx_pol->mode_switch_time_ns      = now;
+            rfx_pol->gaming_lock_end_ns       = now + RFX_GAMING_LOCK_DURATION_NS;
+            rfx_pol->in_heavy_mode            = true;
+            rfx_pol->in_light_mode            = false;
+            rfx_pol->force_idle               = false;
+            rfx_pol->prime_gaming_floor_active = true;
+            rfx_pol->prime_gaming_floor_end_ns = 0;
             rfx_pol->thermal_duty_window_start_ns = 0;
             rfx_pol->thermal_sustain_window_count = 0;
-        } else {
-            rfx_pol->gaming_lock_end_ns           = 0;
-            rfx_pol->current_mode                 = RFX_MODE_NORMAL;
-            rfx_pol->in_heavy_mode                = false;
-            rfx_pol->in_light_mode                = false;
-            rfx_pol->force_idle                   = false;
-            rfx_pol->need_freq_update             = true;
-            rfx_pol->mode_switch_time_ns          = ktime_get_ns();
-            rfx_pol->game_launching               = false;
-            rfx_pol->game_launch_end_ns           = 0;
-            rfx_pol->prime_gaming_floor_active    = false;
-            rfx_pol->prime_gaming_floor_end_ns    = 0;
-            rfx_pol->render_urgency_active        = false;
-            rfx_pol->render_boost_end_ns          = 0;
-            rfx_pol->thermal_throttle_active      = false;
-            rfx_pol->thermal_throttle_end_ns      = 0;
-            rfx_pol->thermal_sustain_window_count = 0;
-            rfx_pol->thermal_duty_window_start_ns = 0;
+
+            /* ── Patch 4: reset EWMA supaya tidak dibebani history idle ── */
+            unsigned int cpu;
+            for_each_cpu(cpu, rfx_pol->policy->cpus) {
+                struct rfx_cpu *rfx_c = per_cpu_ptr(&rfx_cpu, cpu);
+                rfx_c->ewma_raw          = 0;
+                rfx_c->ewma_util_pct     = 0;
+                rfx_c->filtered_busy_pct = 0;
+                rfx_c->hispeed_start_ns  = 0;
+            }
+        }
+    } else {
+        /* gaming_mode=0: kembalikan ke NORMAL */
+        list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
+            rfx_pol->current_mode             = RFX_MODE_NORMAL;
+            rfx_pol->in_heavy_mode            = false;
+            rfx_pol->gaming_lock_end_ns       = 0;
+            rfx_pol->prime_gaming_floor_active = false;
+            rfx_pol->thermal_throttle_active   = false;
+            rfx_pol->thermal_throttle_end_ns   = 0;
         }
     }
 
@@ -2815,6 +2831,15 @@ static int rfx_start(struct cpufreq_policy *policy)
 		cpufreq_add_update_util_hook(cpu, &rfx_c->update_util, uu);
 	}
 	return 0;
+}
+
+if (rfx_pol->tunables->gaming_mode) {
+    u64 now = ktime_get_ns();
+    rfx_pol->current_mode        = RFX_MODE_GAMING;
+    rfx_pol->mode_switch_time_ns = now;
+    rfx_pol->gaming_lock_end_ns  = now + RFX_GAMING_LOCK_DURATION_NS;
+    rfx_pol->in_heavy_mode       = true;
+    rfx_pol->prime_gaming_floor_active = true;
 }
 
 /* === GOVERNOR STOP === */
