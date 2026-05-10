@@ -508,7 +508,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 				rfx_pol->mode_switch_time_ns = time;
 			}
 		}
-	} else if (util_pct < 6 && rfx_pol->in_light_mode) {
+		} else if (util_pct < 6 && rfx_pol->in_light_mode) {
 		if (rfx_pol->current_mode != RFX_MODE_NORMAL) {
 			if (time_in_mode > 32 * NSEC_PER_MSEC) {
 				rfx_pol->current_mode        = RFX_MODE_NORMAL;
@@ -519,9 +519,9 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 				rfx_pol->thermal_throttle_end_ns       = 0;
 				rfx_pol->thermal_sustain_window_count  = 0;
 
-			/* AUTO-GAMING sync: kembalikan prefer_silver saat game selesai */
-			if (!rfx_pol->tunables->gaming_mode)
-    			WRITE_ONCE(sysctl_gaming_mode_active, 0);
+				/* AUTO-GAMING sync: reset prefer_silver saat game selesai */
+				if (!rfx_pol->tunables->gaming_mode)
+					WRITE_ONCE(sysctl_gaming_mode_active, 0);
 			}
 		}
 	}
@@ -1281,15 +1281,15 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     if (freq < anti_drop_floor)
         freq = anti_drop_floor;
 	}
-	/* Tambahkan guard untuk BIG cluster juga */
-	if (!is_prime &&
-    	capacity_orig_of(policy->cpu) > (unsigned long)RFX_LITTLE_CAP_THRESHOLD &&
-    	(rfx_pol->tunables->gaming_mode ||
-     	rfx_pol->current_mode == RFX_MODE_GAMING) &&
-    	!rfx_pol->thermal_throttle_active) {
-    	unsigned int big_floor = rfx_adaptive_floor(policy, 68);
-    if (freq < big_floor)
-        freq = big_floor;
+	
+	/* BIG anti-drop guard saat gaming */
+	if (!is_prime && !is_little &&
+	    (rfx_pol->tunables->gaming_mode ||
+	     rfx_pol->current_mode == RFX_MODE_GAMING) &&
+	    !rfx_pol->thermal_throttle_active) {
+		unsigned int big_floor = rfx_adaptive_floor(policy, 68);
+		if (freq < big_floor)
+			freq = big_floor;
 	}
 
 	/* Freq cap dari state machine / activity state */
