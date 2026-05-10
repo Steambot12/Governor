@@ -1276,11 +1276,16 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 		}
 	}
 
-
-	    if (is_prime && freq < rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT))
-            freq = rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT);
-        else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 78))
-            freq = rfx_adaptive_floor(policy, 78);
+		/* v1.1: UI Transition Floor — gated pada render_urgency_active */
+	if (rfx_pol->render_urgency_active &&
+	    rfx_pol->render_boost_end_ns &&
+	    time < rfx_pol->render_boost_end_ns) {
+		if (is_prime &&
+		    freq < rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT))
+			freq = rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT);
+		else if (!is_little && !is_prime &&
+			 freq < rfx_adaptive_floor(policy, 78))
+			freq = rfx_adaptive_floor(policy, 78);
 	}
 
 	if (rfx_pol->in_heavy_mode &&
