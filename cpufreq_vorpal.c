@@ -25,13 +25,7 @@
 
 extern int vm_swappiness;
 extern unsigned int sysctl_sched_latency;
-extern int sysctl_prefer_silver;
-extern int sysctl_gaming_mode_active;
 static bool rfx_sysctl_overridden;
-extern void prefer_silver_set_gaming(int active);
-
-static int rfx_saved_prefer_silver = -1;
-static DEFINE_MUTEX(rfx_prefer_silver_lock);
 
 #define CPUFREQ_VORPAL_PROGNAME     "Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR       "Templar Dev"
