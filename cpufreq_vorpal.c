@@ -28,6 +28,7 @@ extern unsigned int sysctl_sched_latency;
 extern int sysctl_prefer_silver;
 extern int sysctl_gaming_mode_active;
 static bool rfx_sysctl_overridden;
+extern void prefer_silver_set_gaming(int active);
 
 static int rfx_saved_prefer_silver = -1;
 static DEFINE_MUTEX(rfx_prefer_silver_lock);
@@ -486,19 +487,17 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 	time_in_mode = time - rfx_pol->mode_switch_time_ns;
 
 	if (heavy_load && rfx_c->act_state == RFX_ACT_HEAVY) {
-		if (rfx_pol->current_mode != RFX_MODE_GAMING) {
-			if (time_in_mode > 24 * NSEC_PER_MSEC) {
-				rfx_pol->current_mode        = RFX_MODE_GAMING;
-				rfx_pol->mode_switch_time_ns = time;
-				rfx_pol->gaming_lock_end_ns  =
-					time + RFX_GAMING_LOCK_DURATION_NS;
-
-				/* AUTO-GAMING <-> prefer_silver sync */
-				if (!rfx_pol->tunables->gaming_mode)
-					sysctl_gaming_mode_active = 1;
-			}
-		}
-	} else if (periodic_pattern && !heavy_load) {
+    if (rfx_pol->current_mode != RFX_MODE_GAMING) {
+        if (time_in_mode > 24 * NSEC_PER_MSEC) {
+            rfx_pol->current_mode        = RFX_MODE_GAMING;
+            rfx_pol->mode_switch_time_ns = time;
+            rfx_pol->gaming_lock_end_ns  = time + RFX_GAMING_LOCK_DURATION_NS;
+            /* Sync ke prefer_silver: matikan silver steering saat gaming */
+            if (!rfx_pol->tunables->gaming_mode)
+                prefer_silver_set_gaming(1);
+        	}
+    	}
+	}else if (periodic_pattern && !heavy_load) {
 		not_in_gaming = (rfx_pol->current_mode != RFX_MODE_GAMING) &&
 				!(rfx_pol->gaming_lock_end_ns &&
 				  time < rfx_pol->gaming_lock_end_ns);
@@ -509,21 +508,20 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			}
 		}
 		} else if (util_pct < 6 && rfx_pol->in_light_mode) {
-		if (rfx_pol->current_mode != RFX_MODE_NORMAL) {
-			if (time_in_mode > 32 * NSEC_PER_MSEC) {
-				rfx_pol->current_mode        = RFX_MODE_NORMAL;
-				rfx_pol->mode_switch_time_ns = time;
-				rfx_pol->gaming_lock_end_ns  = 0;
-				rfx_pol->thermal_duty_window_start_ns  = 0;
-				rfx_pol->thermal_throttle_active       = false;
-				rfx_pol->thermal_throttle_end_ns       = 0;
-				rfx_pol->thermal_sustain_window_count  = 0;
-
-				/* AUTO-GAMING sync: reset prefer_silver saat game selesai */
-				if (!rfx_pol->tunables->gaming_mode)
-					WRITE_ONCE(sysctl_gaming_mode_active, 0);
-			}
-		}
+    	if (rfx_pol->current_mode != RFX_MODE_NORMAL) {
+        	if (time_in_mode > 32 * NSEC_PER_MSEC) {
+            	rfx_pol->current_mode = RFX_MODE_NORMAL;
+            	rfx_pol->mode_switch_time_ns = time;
+            	rfx_pol->gaming_lock_end_ns = 0;
+            	rfx_pol->thermal_duty_window_start_ns = 0;
+            	rfx_pol->thermal_throttle_active = false;
+            	rfx_pol->thermal_throttle_end_ns = 0;
+            	rfx_pol->thermal_sustain_window_count = 0;
+            /* Hidupkan kembali silver steering setelah game */
+            if (!rfx_pol->tunables->gaming_mode)
+                prefer_silver_set_gaming(0);
+        	}
+    	}
 	}
 
 	/* Force in_heavy_mode saat mode GAMING, di luar semua branch di atas */
@@ -2339,53 +2337,34 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 
     t->gaming_mode = val;
 
-    /* Sinkronisasi prefer_silver dengan mutex */
-    if (val) {
-        /* SET — matikan prefer_silver, simpan nilai lama */
-        mutex_lock(&rfx_prefer_silver_lock);
-        if (rfx_saved_prefer_silver < 0)
-            rfx_saved_prefer_silver = sysctl_prefer_silver;
-        sysctl_prefer_silver      = 0;
-        sysctl_gaming_mode_active = 1;
-        mutex_unlock(&rfx_prefer_silver_lock);
-    } else {
-        /* CLEAR — kembalikan prefer_silver ke nilai semula */
-        mutex_lock(&rfx_prefer_silver_lock);
-        if (rfx_saved_prefer_silver >= 0) {
-            sysctl_prefer_silver    = rfx_saved_prefer_silver;
-            rfx_saved_prefer_silver = -1;
-        }
-        sysctl_gaming_mode_active = 0;
-        mutex_unlock(&rfx_prefer_silver_lock);
-    }
+    /* Sync ke prefer_silver */
+    prefer_silver_set_gaming(val ? 1 : 0);
 
     /* Update state tiap policy */
     list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
         if (val) {
-            /* gaming_mode = 1: paksa masuk GAMING, reset thermal */
-            rfx_pol->current_mode                 = RFX_MODE_GAMING;
-            rfx_pol->mode_switch_time_ns           = ktime_get_ns();
-            rfx_pol->thermal_duty_window_start_ns  = 0;
-            rfx_pol->thermal_sustain_window_count  = 0;
+            rfx_pol->current_mode                = RFX_MODE_GAMING;
+            rfx_pol->mode_switch_time_ns         = ktime_get_ns();
+            rfx_pol->thermal_duty_window_start_ns = 0;
+            rfx_pol->thermal_sustain_window_count = 0;
         } else {
-            /* gaming_mode = 0: reset semua state ke NORMAL */
-            rfx_pol->gaming_lock_end_ns            = 0;
-            rfx_pol->current_mode                  = RFX_MODE_NORMAL;
-            rfx_pol->in_heavy_mode                 = false;
-            rfx_pol->in_light_mode                 = false;
-            rfx_pol->force_idle                    = false;
-            rfx_pol->need_freq_update              = true;
-            rfx_pol->mode_switch_time_ns           = ktime_get_ns();
-            rfx_pol->game_launching                = false;
-            rfx_pol->game_launch_end_ns            = 0;
-            rfx_pol->prime_gaming_floor_active     = false;
-            rfx_pol->prime_gaming_floor_end_ns     = 0;
-            rfx_pol->render_urgency_active         = false;
-            rfx_pol->render_boost_end_ns           = 0;
-            rfx_pol->thermal_throttle_active       = false;
-            rfx_pol->thermal_throttle_end_ns       = 0;
-            rfx_pol->thermal_sustain_window_count  = 0;
-            rfx_pol->thermal_duty_window_start_ns  = 0;
+            rfx_pol->gaming_lock_end_ns           = 0;
+            rfx_pol->current_mode                 = RFX_MODE_NORMAL;
+            rfx_pol->in_heavy_mode                = false;
+            rfx_pol->in_light_mode                = false;
+            rfx_pol->force_idle                   = false;
+            rfx_pol->need_freq_update             = true;
+            rfx_pol->mode_switch_time_ns          = ktime_get_ns();
+            rfx_pol->game_launching               = false;
+            rfx_pol->game_launch_end_ns           = 0;
+            rfx_pol->prime_gaming_floor_active    = false;
+            rfx_pol->prime_gaming_floor_end_ns    = 0;
+            rfx_pol->render_urgency_active        = false;
+            rfx_pol->render_boost_end_ns          = 0;
+            rfx_pol->thermal_throttle_active      = false;
+            rfx_pol->thermal_throttle_end_ns      = 0;
+            rfx_pol->thermal_sustain_window_count = 0;
+            rfx_pol->thermal_duty_window_start_ns = 0;
         }
     }
 
