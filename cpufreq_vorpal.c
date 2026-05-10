@@ -95,8 +95,8 @@ static bool rfx_sysctl_overridden;
 #define RFX_SUSTAIN_EXIT_TICKS        12
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (10000 * NSEC_PER_MSEC)
-#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (20000 * NSEC_PER_MSEC)
+#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (30000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              95
@@ -151,7 +151,7 @@ static bool rfx_sysctl_overridden;
 /* === EWMA LOAD SMOOTHING === */
 /* Alpha dalam fixed-point Q8: 204 ≈ 0.80, 128 ≈ 0.50, 77 ≈ 0.30 */
 #define RFX_EWMA_ALPHA_DEFAULT          192   /* ≈ 0.60 — balance responsif vs smooth */
-#define RFX_EWMA_ALPHA_GAMING           217   /* ≈ 0.80 — lebih reaktif saat gaming */
+#define RFX_EWMA_ALPHA_GAMING           204   /* ≈ 0.80 — lebih reaktif saat gaming */
 #define RFX_EWMA_ALPHA_IDLE             77    /* ≈ 0.30 — sangat smooth saat idle */
 #define RFX_EWMA_SCALE                  256   /* Q8 fixed-point denominator */
 
@@ -169,10 +169,10 @@ static bool rfx_sysctl_overridden;
 #define RFX_THERMAL_THROTTLE_HARD_PCT   82    /* Hard cap saat headroom rendah */
 
 /* === FRAME PACING FLOOR === */
-#define RFX_FRAME_VARIANCE_THRESH       20    /* Variance di atas ini = frame tidak stabil */
-#define RFX_FRAME_FLOOR_PRIME_PCT       78   /* Floor Prime saat frame variance tinggi */
-#define RFX_FRAME_FLOOR_BIG_PCT         58    /* Floor BIG saat frame variance tinggi */
-#define RFX_FRAME_BOOST_DURATION_NS     (240 * NSEC_PER_MSEC)
+#define RFX_FRAME_VARIANCE_THRESH       45    /* Variance di atas ini = frame tidak stabil */
+#define RFX_FRAME_FLOOR_PRIME_PCT       85   /* Floor Prime saat frame variance tinggi */
+#define RFX_FRAME_FLOOR_BIG_PCT         65    /* Floor BIG saat frame variance tinggi */
+#define RFX_FRAME_BOOST_DURATION_NS     (180 * NSEC_PER_MSEC)
 
 /* === CLUSTER THRESHOLDS === */
 
@@ -1238,9 +1238,12 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 		freq = policy->cpuinfo.min_freq;
 	}
 
-	/* === FRAME PACING FLOOR: stabilkan FPS saat variance tinggi === */
+	/* PATCH: Hanya aktif saat GAMING + in_heavy_mode, cegah osilasi */
 	if (rfx_pol->tunables->frame_pacing_en &&
-	    rfx_pol->frame_floor_active) {
+	    rfx_pol->frame_floor_active &&
+	    rfx_pol->in_heavy_mode &&
+	    (rfx_pol->current_mode == RFX_MODE_GAMING ||
+	     rfx_pol->tunables->gaming_mode)) {
 		if (is_prime) {
 			unsigned int floor =
 				rfx_adaptive_floor(policy,
@@ -1617,12 +1620,18 @@ static void rfx_update_frame_variance(struct rfx_policy *rfx_pol,
     if (!rfx_pol->tunables->frame_pacing_en || !max_cap)
         return;
 
-    /* Hitung rata-rata util dari history */
+    /* PATCH: Hanya aktif saat mode GAMING — di luar gaming, nonaktifkan */
+    if (rfx_pol->current_mode != RFX_MODE_GAMING &&
+        !rfx_pol->tunables->gaming_mode) {
+        rfx_pol->frame_floor_active   = false;
+        rfx_pol->frame_variance_score = 0;
+        return;
+    }
+
     for (i = 0; i < 8; i++)
         avg += rfx_c->util_history[i];
     avg /= 8;
 
-    /* Hitung variance (mean absolute deviation) */
     for (i = 0; i < 8; i++) {
         int diff = (int)rfx_c->util_history[i] - (int)avg;
         variance += (unsigned int)(diff < 0 ? -diff : diff);
@@ -1630,10 +1639,11 @@ static void rfx_update_frame_variance(struct rfx_policy *rfx_pol,
 
     rfx_pol->frame_variance_score = variance;
 
-    /* Aktifkan frame floor jika variance tinggi (frame tidak stabil) */
-    if (variance > RFX_FRAME_VARIANCE_THRESH) {
-        rfx_pol->frame_floor_active   = true;
-        rfx_pol->frame_floor_end_ns   = time + RFX_FRAME_BOOST_DURATION_NS;
+    /* PATCH: Threshold dinaikkan — hanya aktif saat variance benar-benar
+     * tinggi (>45), bukan 20 yang terlalu sensitif dan menyebabkan osilasi */
+    if (variance > 45 && rfx_pol->in_heavy_mode) {
+        rfx_pol->frame_floor_active = true;
+        rfx_pol->frame_floor_end_ns = time + RFX_FRAME_BOOST_DURATION_NS;
     } else if (rfx_pol->frame_floor_active &&
                time >= rfx_pol->frame_floor_end_ns) {
         rfx_pol->frame_floor_active   = false;
