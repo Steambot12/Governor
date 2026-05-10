@@ -101,7 +101,7 @@ static bool rfx_sysctl_overridden;
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              95
 #define RFX_BIG_GAMING_MAX_PCT          92
-#define RFX_PRIME_GAMING_FLOOR_PCT      88
+#define RFX_PRIME_GAMING_FLOOR_PCT      90
 #define RFX_GAME_LAUNCH_FLOOR_PCT       82
 #define RFX_BIG_GAMING_FLOOR_PCT        70
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
@@ -141,7 +141,7 @@ static bool rfx_sysctl_overridden;
 #define RFX_THERMAL_THROTTLE_BURST_NS    (350  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     86
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  78
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  84
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -486,9 +486,6 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
             rfx_pol->current_mode        = RFX_MODE_GAMING;
             rfx_pol->mode_switch_time_ns = time;
             rfx_pol->gaming_lock_end_ns  = time + RFX_GAMING_LOCK_DURATION_NS;
-            /* Sync ke prefer_silver: matikan silver steering saat gaming */
-            if (!rfx_pol->tunables->gaming_mode)
-                prefer_silver_set_gaming(1);
         	}
     	}
 	}else if (periodic_pattern && !heavy_load) {
@@ -511,9 +508,6 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
             	rfx_pol->thermal_throttle_active = false;
             	rfx_pol->thermal_throttle_end_ns = 0;
             	rfx_pol->thermal_sustain_window_count = 0;
-            /* Hidupkan kembali silver steering setelah game */
-            if (!rfx_pol->tunables->gaming_mode)
-                prefer_silver_set_gaming(0);
         	}
     	}
 	}
@@ -1268,7 +1262,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
      	rfx_pol->current_mode == RFX_MODE_GAMING) &&
     	!rfx_pol->thermal_throttle_active) {
     /* manual gaming_mode = floor 82%, auto-detect = floor 78% */
-    	unsigned int floor_pct = rfx_pol->tunables->gaming_mode ? 82 : 78;
+    	unsigned int floor_pct = rfx_pol->tunables->gaming_mode ? 88 : 82;
     	unsigned int anti_drop_floor = rfx_adaptive_floor(policy, floor_pct);
     if (freq < anti_drop_floor)
         freq = anti_drop_floor;
@@ -1279,7 +1273,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	    (rfx_pol->tunables->gaming_mode ||
 	     rfx_pol->current_mode == RFX_MODE_GAMING) &&
 	    !rfx_pol->thermal_throttle_active) {
-		unsigned int big_floor = rfx_adaptive_floor(policy, 68);
+		unsigned int big_floor = rfx_adaptive_floor(policy, 72);
 		if (freq < big_floor)
 			freq = big_floor;
 	}
@@ -2331,10 +2325,7 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 
     t->gaming_mode = val;
 
-    /* Sync ke prefer_silver */
-    prefer_silver_set_gaming(val ? 1 : 0);
-
-    /* Update state tiap policy */
+    /* HANYA update state vorpal sendiri */
     list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
         if (val) {
             rfx_pol->current_mode                = RFX_MODE_GAMING;
