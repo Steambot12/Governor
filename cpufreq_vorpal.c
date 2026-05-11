@@ -1865,10 +1865,13 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	effective_util = max(rfx_c->util, boost);
 
 	rfx_update_busy_pct(rfx_c, tunables->hispeed_window_us,
-			    tunables->hispeed_filter_shift, max_cap, time);
+    	                tunables->hispeed_filter_shift, max_cap, time);
 
-	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
-					hispeed_pct);
+	{
+    unsigned int hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
+    effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
+    	                    hispeed_pct);
+	}
     {
         bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
         rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util,
@@ -2124,11 +2127,14 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 		rfx_get_util(j_rfxc, j_boost);
 		j_util  = max(j_rfxc->util, j_boost);
 
-		rfx_update_busy_pct(j_rfxc, tunables->hispeed_window_us,
-				    tunables->hispeed_filter_shift, max_cap, time);
+	rfx_update_busy_pct(j_rfxc, tunables->hispeed_window_us,
+                    tunables->hispeed_filter_shift, max_cap, time);
 
-		j_util  = rfx_blend_util(j_rfxc, j_util, max_cap, time,
-					 hispeed_pct);
+	{
+    unsigned int hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
+    j_util = rfx_blend_util(j_rfxc, j_util, max_cap, time,
+                    hispeed_pct);
+	}
 
 		{
 			bool j_is_big = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
