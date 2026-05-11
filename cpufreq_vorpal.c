@@ -33,7 +33,7 @@ extern unsigned int sysctl_sched_latency;
 
 #define CPUFREQ_VORPAL_PROGNAME     "Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR       "Templar Dev"
-#define CPUFREQ_VORPAL_VERSION 		"1.1"
+#define CPUFREQ_VORPAL_VERSION 		"1.2"
 /* ============================================================
  * VORPAL v1.1 NEW FEATURES
  * ============================================================ */
@@ -83,9 +83,6 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_UI_TRANSITION_FLOOR_PCT          80
 
 /* === RATE LIMITS === */
- 
-/* UI Animation protection */
-#define RFX_UI_IDLE_PROTECTION_NS   (25ULL * NSEC_PER_MSEC)
 #define RFX_LITTLE_INTERACTIVE_FLOOR_KHZ  768000
 #define RFX_GAME_LAUNCH_BOOST_NS   (15000ULL * NSEC_PER_MSEC)
 
@@ -167,7 +164,6 @@ extern unsigned int sysctl_sched_latency;
 /* === IDLE & DEEPSLEEP - <1% DRAIN TARGET === */
 
 #define RFX_IDLE_STALE_NS      (30ULL * NSEC_PER_MSEC)
-#define RFX_FORCE_IDLE_THRESHOLD_NS   (15ULL * NSEC_PER_USEC)
 #define RFX_IDLE_HYSTERESIS_NS (25ULL * NSEC_PER_MSEC)
 
 /* === FREQUENCY FLOORS & CAPS - IDLE FIX === */
@@ -261,16 +257,6 @@ enum rfx_mode {
 	RFX_MODE_VIDEO  = 2,
 };
 
-static inline enum rfx_cluster_type rfx_get_cluster_type(unsigned int cpu)
-{
-	unsigned long cap = arch_scale_cpu_capacity(cpu);
-	if (cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD)
-		return RFX_CLUSTER_LITTLE;
-	if (cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD)
-		return RFX_CLUSTER_PRIME;
-	return RFX_CLUSTER_BIG;
-}
-
 static inline bool rfx_is_little(unsigned int cpu)
 {
 	return arch_scale_cpu_capacity(cpu) <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD;
@@ -358,8 +344,6 @@ struct rfx_policy {
 	enum rfx_mode		current_mode;
 	u64			mode_switch_time_ns;
 	u64			gaming_lock_end_ns;
-	bool			video_pattern_detected;
-	u64			video_detect_start_ns;
 	u64			idle_entry_time_ns;
 	bool			in_deep_idle;
 	u64   		game_launch_end_ns;
@@ -369,7 +353,6 @@ struct rfx_policy {
 	u64             thermal_throttle_end_ns;
 	bool            thermal_throttle_active;
 	unsigned int    thermal_sustain_window_count;
-	u64             thermal_duty_last_active_ns;
 	u64			render_boost_end_ns;
 	bool			render_urgency_active;
 	/* Auto ROM detection - set at init, NOT user-settable */
@@ -419,7 +402,6 @@ struct rfx_cpu {
 	unsigned int		util_history[8];
 	u8			util_history_idx;
 	bool			is_video_pattern;
-	bool            is_gaming_pattern;
 
     /* === v1.1: Frame Pacing Detector === */
     u64             frame_timestamps[8];
@@ -1000,7 +982,6 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 			rfx_pol->thermal_sustain_window_count++;
 			if (rfx_pol->thermal_sustain_window_count > 6)
             	rfx_pol->thermal_sustain_window_count = 6;
-			rfx_pol->thermal_duty_last_active_ns = time;
 		}
 		return;
 	}
@@ -1010,6 +991,9 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 		: RFX_THERMAL_WINDOW_NS;
 
 	window_elapsed = time - rfx_pol->thermal_duty_window_start_ns;
+
+	if (rfx_pol->tunables->gaming_mode)
+        effective_window = effective_window + (effective_window >> 1);
 
 	if (window_elapsed >= effective_window) {
 		rfx_pol->thermal_throttle_active    = true;
@@ -1229,9 +1213,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	    /* === TIME-BASED DUTY CYCLE THERMAL === */
     if (rfx_pol->current_mode == RFX_MODE_GAMING) {
-        if (!rfx_pol->tunables->gaming_mode &&
-            !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns))
-            rfx_thermal_duty_cycle(rfx_pol, time);
+        rfx_thermal_duty_cycle(rfx_pol, time);
 
         if (is_prime) {
   			if (rfx_pol->tunables->gaming_mode) {
@@ -1516,11 +1498,13 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	}
 
 	/* Interactive detection - shorter */
-	interactive_cond = (util_pct >= RFX_INTERACTIVE_UTIL_PCT);
+	interactive_cond = is_prime
+    	? (util_pct >= 5)     /* PRIME: threshold lebih tinggi, hindari noise */
+    	: (util_pct >= RFX_INTERACTIVE_UTIL_PCT);
 	if (interactive_cond) {
 		u64 interactive_dur;
 	if (is_prime)
-    	interactive_dur = 500 * NSEC_PER_MSEC;  // PRIME: 500ms
+    	interactive_dur = 200 * NSEC_PER_MSEC;  // PRIME: 200ms
 	else if (is_big)
     	interactive_dur = 1500 * NSEC_PER_MSEC; // BIG: 1.5s
 	else
@@ -2839,8 +2823,6 @@ static int rfx_start(struct cpufreq_policy *policy)
 	rfx_pol->current_mode        = RFX_MODE_NORMAL;
 	rfx_pol->mode_switch_time_ns = now;
 	rfx_pol->gaming_lock_end_ns  = 0;
-	rfx_pol->video_pattern_detected = false;
-	rfx_pol->video_detect_start_ns  = 0;
 	rfx_pol->idle_entry_time_ns  = 0;
 	rfx_pol->in_deep_idle        = false;
 	rfx_pol->game_launch_end_ns  = 0;
@@ -2849,8 +2831,7 @@ static int rfx_start(struct cpufreq_policy *policy)
 	rfx_pol->thermal_throttle_end_ns       = 0;
 	rfx_pol->thermal_throttle_active       = false;
 	rfx_pol->thermal_sustain_window_count  = 0;
-	rfx_pol->thermal_duty_last_active_ns   = 0;
-	    rfx_pol->render_urgency_active = false;
+	rfx_pol->render_urgency_active = false;
     rfx_pol->render_boost_end_ns   = 0;
 
     /* === v1.1: Init new fields === */
