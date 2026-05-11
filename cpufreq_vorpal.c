@@ -143,14 +143,14 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_SUSTAIN_HEAVY_EXIT_PCT    20
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS         8
+#define RFX_SUSTAIN_EXIT_TICKS         5
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (12000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (8000ULL * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              90
+#define RFX_GAMING_MAX_PCT              85
 #define RFX_BIG_GAMING_MAX_PCT          88
 #define RFX_PRIME_GAMING_FLOOR_PCT      82
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
@@ -186,10 +186,10 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (14000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (11000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (800ULL  * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT     86
+#define RFX_THERMAL_WINDOW_NS            (10000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (7000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (1200ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT     82
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
 
@@ -673,12 +673,14 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
             rfx_pol->in_heavy_mode      = true;
             rfx_pol->sustain_exit_ticks = 0;
         } else {
-            /* Extend hysteresis to 8s to prevent freq bounce after lock expires */
-            if (!rfx_pol->gaming_lock_end_ns ||
-                (time - rfx_pol->gaming_lock_end_ns) > (8000ULL * NSEC_PER_MSEC)) {
-                rfx_pol->in_heavy_mode = false;
-            }
-        }   /* ← FIX #1: tutup else { } */
+    		u64 hyst_ns = (rfx_pol->tunables->cluster_type == RFX_CLUSTER_PRIME)
+         		          ? (3000ULL * NSEC_PER_MSEC)
+            		      : (8000ULL * NSEC_PER_MSEC);
+    		if (!rfx_pol->gaming_lock_end_ns ||
+        		(time - rfx_pol->gaming_lock_end_ns) > hyst_ns) {
+        		rfx_pol->in_heavy_mode = false;
+    		}
+		}
 
         if (rfx_pol->policy) {
             unsigned long cap = arch_scale_cpu_capacity(
@@ -1232,14 +1234,16 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
             rfx_thermal_duty_cycle(rfx_pol, time);
 
         if (is_prime) {
-            if (rfx_pol->tunables->gaming_mode) {
-                unsigned int hard_floor = rfx_adaptive_floor(policy,
-                    RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
-                if (rfx_pol->in_heavy_mode && freq < hard_floor)
-                    freq = hard_floor;
-                if (freq > policy->max)
-                    freq = policy->max;
-            } else {
+  			if (rfx_pol->tunables->gaming_mode) {
+    			unsigned int hard_floor = rfx_adaptive_floor(policy,
+        			RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+    			unsigned int gaming_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
+    			if (rfx_pol->in_heavy_mode && freq < hard_floor) {
+        			freq = hard_floor;
+    			}
+    			if (freq > gaming_cap)
+        			freq = gaming_cap;
+			} else {
                 unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
                 unsigned int hard_floor = rfx_adaptive_floor(policy,
                     RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
@@ -1954,11 +1958,15 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	}
 
 	if (!rfx_pol->tunables->gaming_mode) {
-		unsigned int cur_util_pct = max_cap ?
-			(unsigned int)(effective_util * 100 / max_cap) : 0;
-		if (rfx_c->act_state >= RFX_ACT_MEDIUM &&
-		    rfx_c->prev_util_pct < 10 && cur_util_pct > 20)
-			rfx_pol->interactive_end_ns = time + RFX_INTERACTIVE_DURATION_NS;
+    	unsigned int cur_util_pct = max_cap ?
+        (unsigned int)(effective_util * 100 / max_cap) : 0;
+    	if (rfx_c->act_state >= RFX_ACT_MEDIUM &&
+        	rfx_c->prev_util_pct < 10 && cur_util_pct > 20) {
+        bool _is_prime = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
+        	u64 _idur = _is_prime ? (300ULL * NSEC_PER_MSEC)
+                              : RFX_INTERACTIVE_DURATION_NS;
+        	rfx_pol->interactive_end_ns = time + _idur;
+    	}
 	}
 
 	is_heavy = (rfx_c->act_state == RFX_ACT_HEAVY) || rfx_pol->in_heavy_mode ||
