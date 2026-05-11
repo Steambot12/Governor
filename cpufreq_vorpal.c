@@ -1187,13 +1187,11 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	unsigned int freq;
 	bool is_little = (max <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD);
 	bool is_prime  = (max >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
-	unsigned int hispeed_pct;
 	unsigned long raw_util = util; /* FIX: simpan pre-headroom util untuk rescue */
 
 	if (!policy)
 		return 0;
 
-	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	util        = rfx_apply_headroom(util, max, is_heavy, rfx_pol->current_mode);
 	freq        = rfx_get_ref_freq(policy);
 	freq        = (unsigned int)((u64)freq * util / max);
@@ -1307,7 +1305,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	    rfx_pol->current_mode != RFX_MODE_GAMING &&
 	    !is_little) {
 		unsigned int exit_util_pct = max ?
-			(unsigned int)(util * 100 / max) : 0;
+			(unsigned int)(raw_util * 100 / max) : 0;
 		if (exit_util_pct < 20) {
 			unsigned int exit_soft_cap = is_prime ?
     			rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT) :
@@ -1455,7 +1453,7 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 
 			if (is_big) {
 				heavy_cond = (util_pct >= RFX_SUSTAIN_HEAVY_ENTER_PCT)
-          				&& (rfx_c->filtered_busy_pct >= RFX_SUSTAIN_HEAVY_BUSY_PCT || rfx_c->busy_pct >= 18);
+          					 && (rfx_c->filtered_busy_pct >= RFX_SUSTAIN_HEAVY_BUSY_PCT || rfx_c->busy_pct >= 18);
 
 			if (!rfx_pol->in_heavy_mode) {
 				if (heavy_cond) {
@@ -1851,8 +1849,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned int         cur_pct;
 	unsigned int         gf;
 	unsigned int         idle_cap;
-	unsigned int         hispeed_pct;
-	unsigned int         hist_snap;
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 
@@ -1871,14 +1867,13 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	rfx_update_busy_pct(rfx_c, tunables->hispeed_window_us,
 			    tunables->hispeed_filter_shift, max_cap, time);
 
-	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
 					hispeed_pct);
-		{
+    {
         bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
         rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util,
                                  max_cap, is_big_cluster, time);
-    	}
+    }
 
 	act_force = rfx_act_update(rfx_c, effective_util, max_cap, time,
 				   &freq_cap_khz);
@@ -2117,7 +2112,6 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 	struct rfx_cpu *lead;
 	unsigned int sgf;
 	unsigned int idle_cap;
-	unsigned int hispeed_pct;
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
 
@@ -2133,7 +2127,6 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 		rfx_update_busy_pct(j_rfxc, tunables->hispeed_window_us,
 				    tunables->hispeed_filter_shift, max_cap, time);
 
-		hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 		j_util  = rfx_blend_util(j_rfxc, j_util, max_cap, time,
 					 hispeed_pct);
 
@@ -2394,7 +2387,7 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
         	rfx_pol->game_launch_end_ns      = 0;
         	rfx_pol->prime_gaming_floor_active = false;
         	rfx_pol->prime_gaming_floor_end_ns = 0;
-        	            rfx_pol->render_urgency_active   = false;
+        	rfx_pol->render_urgency_active   = false;
             rfx_pol->render_boost_end_ns   = 0;
             /* v1.1 reset */
             rfx_pol->peak_starve_count     = 0;
