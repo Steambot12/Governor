@@ -637,7 +637,6 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     bool heavy_load = util_pct >= 45;
     bool medium_load = util_pct >= 18 && util_pct < 55;
     bool periodic_pattern = false;
-    bool not_in_gaming;
     u64 time_in_mode;
     unsigned int variance = 0, avg = 0;
     int i;
@@ -708,11 +707,18 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
                 rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
             }
         }
-    } else if (periodic_pattern && !heavy_load) {
-        not_in_gaming = (rfx_pol->current_mode != RFX_MODE_GAMING) &&
-                        !(rfx_pol->gaming_lock_end_ns &&
-                          time < rfx_pol->gaming_lock_end_ns);
-        if (not_in_gaming && rfx_pol->current_mode != RFX_MODE_VIDEO) {
+        } else if (periodic_pattern && !heavy_load) {
+        bool gaming_lock_recently_expired =
+            (rfx_pol->gaming_lock_end_ns > 0 &&
+             time >= rfx_pol->gaming_lock_end_ns &&
+             (time - rfx_pol->gaming_lock_end_ns) < (2000ULL * NSEC_PER_MSEC));
+
+        bool safe_for_video =
+            (rfx_pol->current_mode != RFX_MODE_GAMING) &&
+            !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns) &&
+            !gaming_lock_recently_expired;
+
+        if (safe_for_video && rfx_pol->current_mode != RFX_MODE_VIDEO) {
             if (time_in_mode > RFX_VIDEO_DETECT_THRESHOLD_NS) {
                 rfx_pol->current_mode        = RFX_MODE_VIDEO;
                 rfx_pol->mode_switch_time_ns = time;
@@ -756,43 +762,33 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 	unsigned long idle_th, light_up_th, med_up_th;
 	unsigned long heavy_dn_th, med_dn_th, light_dn_th;
 	bool force_down = false;
-	s64 stale_delta;
 	struct rfx_policy *rfx_pol = rfx_c->rfx_policy;
 	s64 time_since_last_update;
 	bool is_little = (max_cap <= RFX_LITTLE_CAP_THRESHOLD);
 
-	/* Enhanced idle detection */
-	if (rfx_c->last_update) {
-		time_since_last_update = (s64)(time - rfx_c->last_update);
-		if (time_since_last_update >= (s64)RFX_IDLE_STALE_NS) {
-			rfx_pol->force_idle = true;
-			rfx_pol->force_idle_start_ns = time;
-			rfx_pol->last_real_update_ns = time;
-			if (!rfx_pol->in_deep_idle) {
-				rfx_pol->idle_entry_time_ns = time;
-				rfx_pol->in_deep_idle = true;
-				rfx_pol->cluster_last_idle_start_ns = time;
-			}
-		} else if (rfx_pol->force_idle) {
+		if (rfx_pol->force_idle) {
+			/* Keluar dari idle — ada activity terdeteksi */
 			if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
-				rfx_pol->force_idle = false;
+				rfx_pol->force_idle   = false;
 				rfx_pol->in_deep_idle = false;
-				/* v1.1: Arm wake pulse saat cluster exit dari deep idle */
-            if (rfx_pol->cluster_last_idle_start_ns) {
-                u64 idle_dur = time - rfx_pol->cluster_last_idle_start_ns;
-                if (idle_dur >= (u64)(RFX_WAKE_PULSE_IDLE_MS * NSEC_PER_MSEC))
-                    rfx_pol->wake_pulse_end_ns = time +
-                        (u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
-                rfx_pol->cluster_last_idle_start_ns = 0;
-            }
+				/* Arm wake pulse saat cluster exit dari deep idle */
+				if (rfx_pol->cluster_last_idle_start_ns) {
+					u64 idle_dur = time -
+						rfx_pol->cluster_last_idle_start_ns;
+					if (idle_dur >= (u64)(RFX_WAKE_PULSE_IDLE_MS *
+							      NSEC_PER_MSEC))
+						rfx_pol->wake_pulse_end_ns = time +
+							(u64)(RFX_WAKE_PULSE_MS *
+							      NSEC_PER_MSEC);
+					rfx_pol->cluster_last_idle_start_ns = 0;
+				}
 			} else {
-            /* Fallback: arm wake pulse tanpa durasi check */
-            rfx_pol->wake_pulse_end_ns = time +
-                (u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
+				/* Masih idle tapi belum stale — fallback wake pulse */
+				rfx_pol->wake_pulse_end_ns = time +
+					(u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
 			}
 		}
 	}
-
 	/* Gaming/benchmark mode: bypass throttling */
 	if (rfx_pol->in_heavy_mode ||
 	    (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
@@ -826,13 +822,6 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 		return false;
 	}
 
-	if (rfx_c->last_update && !rfx_pol->force_idle) {
-    	stale_delta = (s64)(time - rfx_c->last_update);
-    	if (stale_delta >= (s64)RFX_IDLE_STALE_NS) {
-        	if (rfx_pol->interactive_end_ns && time < rfx_pol->interactive_end_ns) {
-            	*freq_cap_khz = RFX_LITTLE_INTERACTIVE_FLOOR_KHZ;
-            	return false;
-        	}
         	rfx_c->act_state            = RFX_ACT_IDLE;
         	rfx_c->act_up_ticks         = 0;
         	rfx_c->act_down_ticks       = 0;
@@ -1093,15 +1082,17 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
         return true;
     }
 
-        going_up = (rfx_pol->next_freq > rfx_pol->policy->cur);
+    going_up = (rfx_pol->next_freq > rfx_pol->policy->cur);
 
     /* === v1.1: Wakeup Boost — bypass up_rate_limit saat transisi idle→busy === */
     if (going_up) {
-        struct rfx_cpu *wc = per_cpu_ptr(&rfx_cpu,
-            cpumask_first(rfx_pol->policy->cpus));
-        if (wc->wakeup_boost_ticks_left > 0) {
-            wc->wakeup_boost_ticks_left--;
-            return true;
+        if (!cpumask_empty(rfx_pol->policy->cpus)) {
+            struct rfx_cpu *wc = per_cpu_ptr(&rfx_cpu,
+                cpumask_first(rfx_pol->policy->cpus));
+            if (wc->wakeup_boost_ticks_left > 0) {
+                wc->wakeup_boost_ticks_left--;
+                return true;
+            }
         }
     }
 
@@ -1180,16 +1171,18 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
 	return true;
 }
 
+/* AFTER — tambah raw_util sebelum headroom: */
 static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
-				      unsigned long util, unsigned long max,
-				      unsigned int freq_cap_khz, bool is_heavy,
-				      u64 time)
+			      unsigned long util, unsigned long max,
+			      unsigned int freq_cap_khz, bool is_heavy,
+			      u64 time)
 {
 	struct cpufreq_policy *policy = rfx_pol->policy;
 	unsigned int freq;
 	bool is_little = (max <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD);
 	bool is_prime  = (max >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 	unsigned int hispeed_pct;
+	unsigned long raw_util = util; /* FIX: simpan pre-headroom util untuk rescue */
 
 	if (!policy)
 		return 0;
@@ -1384,10 +1377,10 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	if (freq == rfx_pol->cached_raw_freq && !rfx_pol->need_freq_update)
 		return rfx_pol->next_freq;
 
-    /* === v1.1: Peak Headroom Rescue (gaming_mode only) === */
+        /* === v1.1: Peak Headroom Rescue (gaming_mode only) === */
     if (!rfx_pol->force_idle && rfx_pol->in_heavy_mode) {
         unsigned int rescue_util_pct = max ?
-            (unsigned int)(util * 100 / max) : 0;
+            (unsigned int)(raw_util * 100 / max) : 0;
         freq = rfx_peak_headroom_rescue(rfx_pol, freq, rescue_util_pct, time);
     }
 
@@ -1856,7 +1849,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned int         cached_freq = rfx_pol->cached_raw_freq;
 	unsigned long        max_cap, boost, effective_util;
 	unsigned int         next_f, freq_cap_khz = 0;
-	bool    			 force_down = false, act_force = false, nohz_drop = false;
+	bool    			 force_down = false, act_force, nohz_drop = false;
 	bool                 hold, is_heavy;
 	unsigned int         cur_pct;
 	unsigned int         gf;
@@ -1884,13 +1877,16 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
 	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
 					hispeed_pct);
-	{
+		{
 		bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
 		rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util, max_cap, is_big_cluster, time);
 	}
 
-	    /* === v1.1: Frame Pacing Aware Boost === */
-    rfx_update_frame_pacing(rfx_c, rfx_pol, effective_util, max_cap, time);
+	act_force = rfx_act_update(rfx_c, effective_util, max_cap, time,
+				   &freq_cap_khz);
+
+	/* === v1.1: Frame Pacing Aware Boost === */
+	rfx_update_frame_pacing(rfx_c, rfx_pol, effective_util, max_cap, time);
 
     /* === v1.1: Migration Detection === */
     {
@@ -2425,10 +2421,12 @@ static ssize_t em_floor_pct_show(struct gov_attr_set *attr_set, char *buf)
 {
     return sprintf(buf, "%u\n", to_rfx_tunables(attr_set)->em_floor_pct);
 }
+
 static ssize_t em_floor_pct_store(struct gov_attr_set *attr_set,
                                    const char *buf, size_t count)
 {
     struct rfx_tunables *t = to_rfx_tunables(attr_set);
+    struct rfx_policy *rfx_pol;
     unsigned int val;
 
     if (kstrtouint(buf, 10, &val))
@@ -2439,8 +2437,15 @@ static ssize_t em_floor_pct_store(struct gov_attr_set *attr_set,
         val = RFX_EM_FLOOR_PCT_MAX;
 
     t->em_floor_pct = val;
+
+    list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
+        rfx_pol->need_freq_update = true;
+        rfx_pol->cached_raw_freq  = 0;
+    }
+
     return count;
 }
+
 static struct governor_attr em_floor_pct =
     __ATTR(em_floor_pct, 0644, em_floor_pct_show, em_floor_pct_store);
 
