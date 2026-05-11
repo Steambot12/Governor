@@ -699,15 +699,15 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 
     time_in_mode = time - rfx_pol->mode_switch_time_ns;
 
-    if (heavy_load && rfx_c->act_state == RFX_ACT_HEAVY) {
+	if (heavy_load && rfx_c->act_state == RFX_ACT_HEAVY) {
         if (rfx_pol->current_mode != RFX_MODE_GAMING) {
             if (time_in_mode > 24 * NSEC_PER_MSEC) {
-                rfx_pol->current_mode       = RFX_MODE_GAMING;
+                rfx_pol->current_mode        = RFX_MODE_GAMING;
                 rfx_pol->mode_switch_time_ns = time;
-                rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
+                rfx_pol->gaming_lock_end_ns  = time + RFX_GAMING_LOCK_DURATION_NS;
             }
         }
-        } else if (periodic_pattern && !heavy_load) {
+    } else if (periodic_pattern && !heavy_load) {
         bool gaming_lock_recently_expired =
             (rfx_pol->gaming_lock_end_ns > 0 &&
              time >= rfx_pol->gaming_lock_end_ns &&
@@ -755,9 +755,10 @@ static inline unsigned int rfx_get_hispeed_pct(struct rfx_policy *rfx_pol)
 
 /* === ACTIVITY STATE UPDATE - AGGRESSIVE IDLE === */
 
+/* SESUDAH — fix: hapus orphan braces, restructure force_idle check */
 static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
-			   unsigned long max_cap, u64 time,
-			   unsigned int *freq_cap_khz)
+		   unsigned long max_cap, u64 time,
+		   unsigned int *freq_cap_khz)
 {
 	unsigned long idle_th, light_up_th, med_up_th;
 	unsigned long heavy_dn_th, med_dn_th, light_dn_th;
@@ -766,29 +767,27 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 	s64 time_since_last_update;
 	bool is_little = (max_cap <= RFX_LITTLE_CAP_THRESHOLD);
 
-		if (rfx_pol->force_idle) {
-			/* Keluar dari idle — ada activity terdeteksi */
-			if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
-				rfx_pol->force_idle   = false;
-				rfx_pol->in_deep_idle = false;
-				/* Arm wake pulse saat cluster exit dari deep idle */
-				if (rfx_pol->cluster_last_idle_start_ns) {
-					u64 idle_dur = time -
-						rfx_pol->cluster_last_idle_start_ns;
-					if (idle_dur >= (u64)(RFX_WAKE_PULSE_IDLE_MS *
-							      NSEC_PER_MSEC))
-						rfx_pol->wake_pulse_end_ns = time +
-							(u64)(RFX_WAKE_PULSE_MS *
-							      NSEC_PER_MSEC);
-					rfx_pol->cluster_last_idle_start_ns = 0;
-				}
-			} else {
-				/* Masih idle tapi belum stale — fallback wake pulse */
-				rfx_pol->wake_pulse_end_ns = time +
-					(u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
+	/* Force idle exit check — harus ada opening brace yang benar */
+	if (rfx_pol->force_idle) {
+		if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
+			rfx_pol->force_idle   = false;
+			rfx_pol->in_deep_idle = false;
+			if (rfx_pol->cluster_last_idle_start_ns) {
+				u64 idle_dur = time -
+					rfx_pol->cluster_last_idle_start_ns;
+				if (idle_dur >= (u64)(RFX_WAKE_PULSE_IDLE_MS *
+						      NSEC_PER_MSEC))
+					rfx_pol->wake_pulse_end_ns = time +
+						(u64)(RFX_WAKE_PULSE_MS *
+						      NSEC_PER_MSEC);
+				rfx_pol->cluster_last_idle_start_ns = 0;
 			}
+		} else {
+			rfx_pol->wake_pulse_end_ns = time +
+				(u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
 		}
-	}
+	}   /* <-- HANYA 1 closing brace di sini */
+
 	/* Gaming/benchmark mode: bypass throttling */
 	if (rfx_pol->in_heavy_mode ||
 	    (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
@@ -822,18 +821,28 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 		return false;
 	}
 
-        	rfx_c->act_state            = RFX_ACT_IDLE;
-        	rfx_c->act_up_ticks         = 0;
-        	rfx_c->act_down_ticks       = 0;
-        	rfx_c->filtered_busy_pct    = 0;
-        	rfx_c->hispeed_start_ns     = 0;
-        	rfx_c->hispeed_idle_windows = 0;
-        	rfx_pol->force_idle         = true;
-        	rfx_pol->in_deep_idle       = true;
-        	rfx_pol->idle_entry_time_ns = time;
-        	*freq_cap_khz = rfx_pol->policy->cpuinfo.min_freq;
-        	return true;
-    	}
+	/* Stale detection untuk LITTLE cluster */
+	if (rfx_c->last_update && !rfx_pol->force_idle) {
+		time_since_last_update = (s64)(time - rfx_c->last_update);
+		if (time_since_last_update >= (s64)RFX_IDLE_STALE_NS) {
+			if (rfx_pol->interactive_end_ns &&
+			    time < rfx_pol->interactive_end_ns) {
+				*freq_cap_khz = RFX_LITTLE_INTERACTIVE_FLOOR_KHZ;
+				return false;
+			}
+			rfx_c->act_state            = RFX_ACT_IDLE;
+			rfx_c->act_up_ticks         = 0;
+			rfx_c->act_down_ticks       = 0;
+			rfx_c->filtered_busy_pct    = 0;
+			rfx_c->hispeed_start_ns     = 0;
+			rfx_c->hispeed_idle_windows = 0;
+			rfx_pol->force_idle         = true;
+			rfx_pol->in_deep_idle       = true;
+			rfx_pol->idle_entry_time_ns = time;
+			rfx_pol->last_real_update_ns = time;
+			*freq_cap_khz = rfx_pol->policy->cpuinfo.min_freq;
+			return true;
+		}
 	}
 
 	/* Zero util: immediate drop */
@@ -1171,7 +1180,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
 	return true;
 }
 
-/* AFTER — tambah raw_util sebelum headroom: */
+/* Compute next target frequency given current utilization */
 static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			      unsigned long util, unsigned long max,
 			      unsigned int freq_cap_khz, bool is_heavy,
