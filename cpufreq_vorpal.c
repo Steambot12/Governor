@@ -752,9 +752,11 @@ static inline unsigned int rfx_get_hispeed_pct(struct rfx_policy *rfx_pol)
         return RFX_HISPEED_GAMING_PCT;
     case RFX_MODE_VIDEO:
         return RFX_HISPEED_VIDEO_PCT;
-    case RFX_MODE_NORMAL:
-    default:
-        return CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
+	case RFX_MODE_NORMAL:
+	default:
+    if (rfx_pol->tunables->cluster_type == RFX_CLUSTER_PRIME)
+        return 45;
+    return CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
     }
 }
 
@@ -1512,9 +1514,13 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	/* Interactive detection - shorter */
 	interactive_cond = (util_pct >= RFX_INTERACTIVE_UTIL_PCT);
 	if (interactive_cond) {
-    	u64 interactive_dur = is_big
-        	? RFX_INTERACTIVE_DURATION_NS
-        	: (500 * NSEC_PER_MSEC);
+		u64 interactive_dur;
+	if (is_prime)
+    	interactive_dur = 500 * NSEC_PER_MSEC;  // PRIME: 500ms
+	else if (is_big)
+    	interactive_dur = 1500 * NSEC_PER_MSEC; // BIG: 1.5s
+	else
+    	interactive_dur = 500 * NSEC_PER_MSEC;
     	rfx_pol->interactive_end_ns = time + interactive_dur;
     if (rfx_pol->in_light_mode) {
         rfx_pol->in_light_mode     = false;
@@ -1640,7 +1646,8 @@ static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, unsigned int window_us,
 		if (!rfx_c->rfx_policy->in_heavy_mode)
 			rfx_c->hispeed_idle_windows++;
 
-		idle_win_threshold = is_prime ? 5 : 3;
+		idle_win_threshold = (is_prime && !rfx_c->rfx_policy->in_heavy_mode && 
+                      		 rfx_c->rfx_policy->current_mode != RFX_MODE_GAMING) ? 3 : 5;
 		if (!interactive_active &&
 		    rfx_c->hispeed_idle_windows > idle_win_threshold) {
 			rfx_c->hispeed_start_ns   = 0;
@@ -1935,7 +1942,8 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		}
 	}
 
-	if (!rfx_pol->tunables->gaming_mode && rfx_pol->current_mode == RFX_MODE_GAMING) {
+	if (!rfx_pol->tunables->gaming_mode && rfx_pol->current_mode == RFX_MODE_GAMING
+		 && rfx_pol->in_heavy_mode) {
 		unsigned int h  = rfx_c->util_history_idx;
 		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
 		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
@@ -2141,7 +2149,7 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 			j_util = rfx_blend_util(j_rfxc, j_util, max_cap, time,
 						hispeed_pct);
 		}
-		
+
 		{
 			bool j_is_big = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
 			rfx_update_adaptive_mode(rfx_pol, j_rfxc, j_util, max_cap, j_is_big, time);
