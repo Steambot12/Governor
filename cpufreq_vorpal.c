@@ -739,16 +739,21 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     }
 }
 
-/* Get adaptive hispeed pct */
 static inline unsigned int rfx_get_hispeed_pct(struct rfx_policy *rfx_pol)
 {
-	switch (rfx_pol->current_mode) {
-	case RFX_MODE_GAMING:
-		return RFX_HISPEED_GAMING_PCT;
-	case RFX_MODE_VIDEO:
-		return RFX_HISPEED_VIDEO_PCT;
-	case RFX_MODE_NORMAL:
-	default:
+    /* Jika user override via sysfs hispeed_boost_pct, prioritaskan */
+    if (rfx_pol->tunables->hispeed_boost_pct &&
+        rfx_pol->tunables->hispeed_boost_pct != CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT)
+        return rfx_pol->tunables->hispeed_boost_pct;
+
+    /* Fallback: mode-adaptive defaults */
+    switch (rfx_pol->current_mode) {
+    case RFX_MODE_GAMING:
+        return RFX_HISPEED_GAMING_PCT;
+    case RFX_MODE_VIDEO:
+        return RFX_HISPEED_VIDEO_PCT;
+    case RFX_MODE_NORMAL:
+    default:
         return CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT;
     }
 }
@@ -1865,13 +1870,14 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	effective_util = max(rfx_c->util, boost);
 
 	rfx_update_busy_pct(rfx_c, tunables->hispeed_window_us,
-    	                tunables->hispeed_filter_shift, max_cap, time);
+			    tunables->hispeed_filter_shift, max_cap, time);
 
 	{
-    unsigned int hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
-    effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
-    	                    hispeed_pct);
+		unsigned int hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
+		effective_util = rfx_blend_util(rfx_c, effective_util, max_cap,
+						time, hispeed_pct);
 	}
+
     {
         bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
         rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util,
@@ -2127,15 +2133,15 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 		rfx_get_util(j_rfxc, j_boost);
 		j_util  = max(j_rfxc->util, j_boost);
 
-	rfx_update_busy_pct(j_rfxc, tunables->hispeed_window_us,
-                    tunables->hispeed_filter_shift, max_cap, time);
+		rfx_update_busy_pct(j_rfxc, tunables->hispeed_window_us,
+				    tunables->hispeed_filter_shift, max_cap, time);
 
-	{
-    unsigned int hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
-    j_util = rfx_blend_util(j_rfxc, j_util, max_cap, time,
-                    hispeed_pct);
-	}
-
+		{
+			unsigned int hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
+			j_util = rfx_blend_util(j_rfxc, j_util, max_cap, time,
+						hispeed_pct);
+		}
+		
 		{
 			bool j_is_big = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
 			rfx_update_adaptive_mode(rfx_pol, j_rfxc, j_util, max_cap, j_is_big, time);
