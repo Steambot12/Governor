@@ -79,12 +79,12 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_WAKEUP_BOOST_TICKS               2
 
 /* === UPDATED UI TRANSITION BOOST TIMER === */
-#define RFX_UI_TRANSITION_BOOST_NS          (1200ULL * NSEC_PER_MSEC)
-#define RFX_UI_TRANSITION_FLOOR_PCT          88
+#define RFX_UI_TRANSITION_BOOST_NS          (2500ULL * NSEC_PER_MSEC)
+#define RFX_UI_TRANSITION_FLOOR_PCT          82
 
 /* === RATE LIMITS === */
 #define RFX_LITTLE_INTERACTIVE_FLOOR_KHZ  768000
-#define RFX_GAME_LAUNCH_BOOST_NS   (15000ULL * NSEC_PER_MSEC)
+#define RFX_GAME_LAUNCH_BOOST_NS   (20000ULL * NSEC_PER_MSEC)
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
@@ -108,7 +108,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   8000
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   4000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
@@ -149,9 +149,8 @@ extern unsigned int sysctl_sched_latency;
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              85
 #define RFX_BIG_GAMING_MAX_PCT          88
-#define RFX_PRIME_GAMING_FLOOR_PCT      82
-#define RFX_GAME_LAUNCH_FLOOR_PCT       65
-#define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
+#define RFX_PRIME_GAMING_FLOOR_PCT      72
+#define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
 
@@ -178,7 +177,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_INTERACTIVE_FLOOR_KHZ    300000
 
 /* BIG/PRIME floors - COOLER */
-#define RFX_BIG_INTERACTIVE_FLOOR_KHZ  600000
+#define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
@@ -196,9 +195,11 @@ extern unsigned int sysctl_sched_latency;
 
 /* === CLUSTER THRESHOLDS === */
 
-#define RFX_LITTLE_CAP_THRESHOLD    614
-#define RFX_PRIME_CAP_THRESHOLD     1000
-#define RFX_BIG_DROP_PCT            13
+#define RFX_LITTLE_CAP_THRESHOLD     614
+#define RFX_PRIME_CAP_THRESHOLD      1000
+#define RFX_PRIME_IDLE_CAP_PCT       35
+#define RFX_PRIME_LOW_LOAD_THRESHOLD 28
+#define RFX_BIG_DROP_PCT             13
 
 /* === ACTIVITY STATE MACHINE - FAST IDLE === */
 
@@ -404,7 +405,8 @@ struct rfx_cpu {
 	bool			is_video_pattern;
 
     /* === v1.1: Frame Pacing Detector === */
-    u64             frame_timestamps[8];
+ 	u64             frame_timestamps[8];
+    bool            frame_ts_valid[8];
     u8              frame_ts_idx;
     u8              frame_pacing_score;
     bool            frame_120fps_detected;
@@ -427,73 +429,70 @@ static inline struct rfx_tunables *to_rfx_tunables(struct gov_attr_set *attr_set
 
 /* ============================================================
  * FRAME PACING AWARE BOOST (v1.1)
- * Mendeteksi pola frame 120fps dan memperpanjang gaming lock
- * secara proaktif sebelum util drops terdeteksi.
+ * Detects 120fps frame pattern and proactively extends gaming
+ * lock before util drops are observed (PRIME cluster only).
  * ============================================================ */
 static void rfx_update_frame_pacing(struct rfx_cpu *rfx_c,
-                                     struct rfx_policy *rfx_pol,
-                                     unsigned long effective_util,
-                                     unsigned long max_cap, u64 time)
+				     struct rfx_policy *rfx_pol,
+				     unsigned long effective_util,
+				     unsigned long max_cap, u64 time)
 {
-    unsigned int util_pct;
-    u64 interval;
-    u8 i, consistent = 0;
-    u8 cur, prev;
+	unsigned int util_pct;
+	u64 interval;
+	u8 i, consistent = 0;
+	u8 cur, prev;
 
-    if (!rfx_pol->tunables->gaming_mode ||
-        !rfx_pol->tunables->frame_pacing_boost)
-        return;
+	if (!rfx_pol->tunables->gaming_mode ||
+	    !rfx_pol->tunables->frame_pacing_boost)
+		return;
 
-    /* === TAMBAHKAN: Hanya aktif untuk cluster PRIME === */
-    if (!rfx_pol->policy ||
-        !rfx_is_prime(cpumask_first(rfx_pol->policy->cpus)))
-        return;
-		
-    util_pct = max_cap ? (unsigned int)(effective_util * 100 / max_cap) : 0;
+	if (!rfx_pol->policy ||
+	    !rfx_is_prime(cpumask_first(rfx_pol->policy->cpus)))
+		return;
 
-    /* Hanya track saat ada load bermakna (filter idle noise) */
-    if (util_pct < 15)
-        return;
+	util_pct = max_cap ? (unsigned int)(effective_util * 100 / max_cap) : 0;
 
-    /* Simpan timestamp tick ini */
-    rfx_c->frame_timestamps[rfx_c->frame_ts_idx] = time;
-    rfx_c->frame_ts_idx = (rfx_c->frame_ts_idx + 1) & 0x7;
+	/* Skip idle noise */
+	if (util_pct < 15)
+		return;
 
-    /* Hitung konsistensi interval 120fps dalam window terakhir */
-    for (i = 0; i < RFX_FRAME_PACING_WINDOW; i++) {
-        cur  = (rfx_c->frame_ts_idx - 1 - i) & 0x7;
-        prev = (rfx_c->frame_ts_idx - 2 - i) & 0x7;
+	/* Record current timestamp and advance index */
+	rfx_c->frame_timestamps[rfx_c->frame_ts_idx] = time;
+	rfx_c->frame_ts_valid[rfx_c->frame_ts_idx]   = true;
+	rfx_c->frame_ts_idx = (rfx_c->frame_ts_idx + 1) & 0x7;
 
-		/* Guard double: prev DAN cur harus valid */
-		if (!rfx_c->frame_timestamps[prev] ||
-    		!rfx_c->frame_timestamps[cur])
-    	break;
+	/* Count how many recent intervals match 120fps cadence (±2ms) */
+	for (i = 0; i < RFX_FRAME_PACING_WINDOW; i++) {
+		cur  = (rfx_c->frame_ts_idx - 1 - i) & 0x7;
+		prev = (rfx_c->frame_ts_idx - 2 - i) & 0x7;
 
-		/* Sanity check: pastikan cur > prev (tidak wrap) */
+		if (!rfx_c->frame_ts_valid[prev] || !rfx_c->frame_ts_valid[cur])
+			break;
+
+		/* Reject wrapped or equal timestamps */
 		if (rfx_c->frame_timestamps[cur] <= rfx_c->frame_timestamps[prev])
-    	continue;
+			continue;
 
 		interval = rfx_c->frame_timestamps[cur] -
-           		   rfx_c->frame_timestamps[prev];
+			   rfx_c->frame_timestamps[prev];
 
-        /* Cek apakah interval dalam toleransi ±2ms dari 8.333ms */
-        if (interval >= (RFX_FRAME_INTERVAL_120FPS_NS - RFX_FRAME_PACING_JITTER_NS) &&
-            interval <= (RFX_FRAME_INTERVAL_120FPS_NS + RFX_FRAME_PACING_JITTER_NS))
-            consistent++;
-    }
+		if (interval >= (RFX_FRAME_INTERVAL_120FPS_NS - RFX_FRAME_PACING_JITTER_NS) &&
+		    interval <= (RFX_FRAME_INTERVAL_120FPS_NS + RFX_FRAME_PACING_JITTER_NS))
+			consistent++;
+	}
 
-    if (consistent >= RFX_FRAME_PACING_MIN_SCORE) {
-        /* Pola 120fps terdeteksi: perpanjang gaming lock proaktif */
-        rfx_c->frame_120fps_detected = true;
-        rfx_c->frame_pacing_score    = consistent;
-        rfx_pol->gaming_lock_end_ns  = time + RFX_FRAME_PACING_BOOST_NS;
-        rfx_pol->in_heavy_mode       = true;
-    } else if (consistent < 2) {
-        /* Pola tidak konsisten: reset */
-        rfx_c->frame_120fps_detected = false;
-        rfx_c->frame_pacing_score    = 0;
-    }
-    /* else: hysteresis — pertahankan status saat ini (consistent 2-3) */
+	if (consistent >= RFX_FRAME_PACING_MIN_SCORE) {
+		/* 120fps pattern confirmed: extend gaming lock proactively */
+		rfx_c->frame_120fps_detected = true;
+		rfx_c->frame_pacing_score    = consistent;
+		rfx_pol->gaming_lock_end_ns  = time + RFX_FRAME_PACING_BOOST_NS;
+		rfx_pol->in_heavy_mode       = true;
+	} else if (consistent < 2) {
+		/* Inconsistent pattern: reset detector */
+		rfx_c->frame_120fps_detected = false;
+		rfx_c->frame_pacing_score    = 0;
+	}
+	/* else: hysteresis — hold current state (consistent 2–3) */
 }
 
 /* ============================================================
@@ -677,8 +676,9 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 				cpumask_first(rfx_pol->policy->cpus));
 
 			if (cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD) {
-				rfx_pol->prime_gaming_floor_active = true;
-				rfx_pol->prime_gaming_floor_end_ns = 0;
+    			rfx_pol->prime_gaming_floor_active = true;
+    		/* Expire setelah 3 detik tanpa sustain baru */
+    			rfx_pol->prime_gaming_floor_end_ns = time + (3000ULL * NSEC_PER_MSEC);
 			}
 		}
 		return;
@@ -1208,6 +1208,21 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	freq        = clamp_t(unsigned int, freq,
 			      policy->cpuinfo.min_freq, policy->cpuinfo.max_freq);
 
+	/* === PRIME LOW-LOAD CAP: hemat battery saat idle/low load === */
+	if (is_prime && !rfx_pol->in_heavy_mode &&
+    		!(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns) &&
+    		!rfx_pol->render_urgency_active) {
+    		unsigned int util_pct_now = max ?
+        	(unsigned int)(raw_util * 100 / max) : 0;
+    	if (util_pct_now < RFX_PRIME_LOW_LOAD_THRESHOLD) {
+        unsigned int prime_idle_cap = rfx_adaptive_max(policy, RFX_PRIME_IDLE_CAP_PCT);
+        /* Pastikan cap tidak lebih rendah dari min_freq */
+        prime_idle_cap = max(prime_idle_cap, policy->cpuinfo.min_freq);
+        if (freq > prime_idle_cap)
+            freq = prime_idle_cap;
+    	}
+	}
+
 	/* LITTLE cluster: strict cap when non-gaming */
 	if (is_little && !rfx_pol->in_heavy_mode &&
         !rfx_pol->tunables->gaming_mode &&
@@ -1217,9 +1232,16 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
             freq = little_nongaming_cap;
     }
 
-	if (is_prime && freq < rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT)) {
-    	if (is_heavy || rfx_pol->current_mode == RFX_MODE_GAMING)
-        	freq = rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT);
+	if (is_prime && (is_heavy || rfx_pol->current_mode == RFX_MODE_GAMING)) {
+    unsigned int prime_floor_util = max ?
+        (unsigned int)(raw_util * 100 / max) : 0;
+    /* Hanya terapkan floor saat load >=30% atau gaming_mode=1 dengan load >10% */
+    bool apply_floor = rfx_pol->tunables->gaming_mode
+        ? (prime_floor_util >= 10)
+        : (prime_floor_util >= 30);
+    if (apply_floor &&
+        freq < rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT))
+        freq = rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT);
 	}
 
 	if (is_prime && rfx_pol->game_launching &&
@@ -1522,7 +1544,9 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	if (interactive_cond) {
 		u64 interactive_dur;
 	if (is_prime)
-    	interactive_dur = 200 * NSEC_PER_MSEC;  // PRIME: 200ms
+    	interactive_dur = rfx_pol->tunables->gaming_mode
+        ? (600ULL * NSEC_PER_MSEC)   /* gaming: 600ms */
+        : (400ULL * NSEC_PER_MSEC); // PRIME: 200ms
 	else if (is_big)
     	interactive_dur = 1500 * NSEC_PER_MSEC; // BIG: 1.5s
 	else
@@ -1922,32 +1946,38 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
             rfx_c->wakeup_boost_ticks_left = RFX_WAKEUP_BOOST_TICKS;
     }
 
-		if (rfx_pol->tunables->gaming_mode) {
-		unsigned int h  = rfx_c->util_history_idx;
-		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
-		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
-		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-		/* Pattern 1: gradual rising (existing) */
-		bool rising = h1 > h2 && h2 > h3 && h1 > 20;
-		/* Pattern 2: sudden spike from idle/low — catch swipe/gesture bursts */
-		bool sudden_spike = (h1 > 30) && (h2 < 20) && (h1 > h2 + 15);
-		/* Pattern 3: high-but-flat load staying heavy */
-		bool sustained_heavy = (h1 >= 35) && (h2 >= 35) && (h3 >= 35);
-		/* Pattern 4: burst-dip-burst (WuWa animation sequence) */
-		bool wuwa_anim = (h1 > 25) && (h3 > 25) && (h2 < 18);
+/* === FIX: Re-arm render boost saat battle start terdeteksi
+ * (wuwa_anim atau sudden_spike di gaming_mode) === */
+if (rfx_pol->tunables->gaming_mode) {
+    unsigned int h  = rfx_c->util_history_idx;
+    unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
+    unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
+    unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
+    bool sudden_spike   = (h1 > 30) && (h2 < 20) && (h1 > h2 + 15);
+    /* WuWa: burst-dip-burst — lebih ketat dari sebelumnya */
+    bool wuwa_anim      = (h1 > 28) && (h3 > 28) && (h2 < 15);  /* was h2 < 18 */
+    bool sustained_heavy = (h1 >= 35) && (h2 >= 35) && (h3 >= 35);
+    bool rising         = h1 > h2 && h2 > h3 && h1 > 20;
 
-		if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
-    		rfx_pol->in_heavy_mode      = true;
-    		rfx_pol->gaming_lock_end_ns = time +
-        		(sudden_spike || wuwa_anim ? (1200 * NSEC_PER_MSEC) : (800 * NSEC_PER_MSEC));
-    		rfx_pol->render_urgency_active = true;
-    		rfx_pol->render_boost_end_ns = time +
-    			(sudden_spike || wuwa_anim
-        			? RFX_UI_TRANSITION_BOOST_NS    /* 1200ms, was 900ms */
-        			: (300ULL * NSEC_PER_MSEC));
-			}
-		}
-
+    if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
+        rfx_pol->in_heavy_mode      = true;
+        rfx_pol->gaming_lock_end_ns = time +
+            (sudden_spike || wuwa_anim ? (2000ULL * NSEC_PER_MSEC)  /* was 1200ms */
+                                       : (1000ULL * NSEC_PER_MSEC)); /* was 800ms */
+        rfx_pol->render_urgency_active = true;
+        rfx_pol->render_boost_end_ns = time +
+            (sudden_spike || wuwa_anim
+                ? RFX_UI_TRANSITION_BOOST_NS   /* 2500ms */
+                : (500ULL * NSEC_PER_MSEC));
+        /* Re-trigger game_launch jika sudah expired */
+        if (!rfx_pol->game_launching &&
+            (!rfx_pol->game_launch_end_ns ||
+             time >= rfx_pol->game_launch_end_ns)) {
+            rfx_pol->game_launching     = true;
+            rfx_pol->game_launch_end_ns = time + RFX_GAME_LAUNCH_BOOST_NS;
+        	}
+    	}
+	}
 	if (!rfx_pol->tunables->gaming_mode && rfx_pol->current_mode == RFX_MODE_GAMING
 		 && rfx_pol->in_heavy_mode) {
 		unsigned int h  = rfx_c->util_history_idx;
@@ -2892,6 +2922,7 @@ static int rfx_start(struct cpufreq_policy *policy)
             rfx_c->util_history[i] = 0;
         /* v1.1 init */
         memset(rfx_c->frame_timestamps, 0, sizeof(rfx_c->frame_timestamps));
+		memset(rfx_c->frame_ts_valid,   0, sizeof(rfx_c->frame_ts_valid));
         rfx_c->frame_ts_idx           = 0;
         rfx_c->frame_pacing_score     = 0;
         rfx_c->frame_120fps_detected  = false;
