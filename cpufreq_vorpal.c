@@ -769,24 +769,21 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 
 	/* Force idle exit check — harus ada opening brace yang benar */
 	if (rfx_pol->force_idle) {
-		if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
-			rfx_pol->force_idle   = false;
-			rfx_pol->in_deep_idle = false;
-			if (rfx_pol->cluster_last_idle_start_ns) {
-				u64 idle_dur = time -
-					rfx_pol->cluster_last_idle_start_ns;
-				if (idle_dur >= (u64)(RFX_WAKE_PULSE_IDLE_MS *
-						      NSEC_PER_MSEC))
-					rfx_pol->wake_pulse_end_ns = time +
-						(u64)(RFX_WAKE_PULSE_MS *
-						      NSEC_PER_MSEC);
-				rfx_pol->cluster_last_idle_start_ns = 0;
-			}
-		} else {
-			rfx_pol->wake_pulse_end_ns = time +
-				(u64)(RFX_WAKE_PULSE_MS * NSEC_PER_MSEC);
-		}
-	}   /* <-- HANYA 1 closing brace di sini */
+    if (effective_util > 0 || rfx_c->filtered_busy_pct > 0) {
+        rfx_pol->force_idle   = false;
+        rfx_pol->in_deep_idle = false;
+        if (rfx_pol->cluster_last_idle_start_ns) {
+            u64 idle_dur = time -
+                rfx_pol->cluster_last_idle_start_ns;
+            if (idle_dur >= (u64)(RFX_WAKE_PULSE_IDLE_MS *
+                          NSEC_PER_MSEC))
+                rfx_pol->wake_pulse_end_ns = time +
+                    (u64)(RFX_WAKE_PULSE_MS *
+                          NSEC_PER_MSEC);
+            rfx_pol->cluster_last_idle_start_ns = 0;
+        	}
+    	}
+	}
 
 	/* Gaming/benchmark mode: bypass throttling */
 	if (rfx_pol->in_heavy_mode ||
@@ -1022,7 +1019,7 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 	unsigned int headroom_pct;
 
 	if (!max_cap)
-    return util;
+    	return util;
 	result   = min(util, max_cap);
 	util_pct = (unsigned int)(util * 100 / max_cap);
 
@@ -1205,12 +1202,12 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
 	/* LITTLE cluster: strict cap when non-gaming */
 	if (is_little && !rfx_pol->in_heavy_mode &&
-    	!rfx_pol->tunables->gaming_mode &&
-    	!(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
-    	unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 53);
-	if (freq > little_nongaming_cap)
-    	freq = little_nongaming_cap;
-	}
+        !rfx_pol->tunables->gaming_mode &&
+        !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns)) {
+        unsigned int little_nongaming_cap = rfx_adaptive_max(policy, 53);
+        if (freq > little_nongaming_cap)    /* <-- tambah 1 tab */
+            freq = little_nongaming_cap;
+    }
 
 	if (is_prime && freq < rfx_adaptive_floor(policy, RFX_PRIME_GAMING_FLOOR_PCT)) {
     	if (is_heavy || rfx_pol->current_mode == RFX_MODE_GAMING)
@@ -1223,64 +1220,55 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         	freq = rfx_adaptive_floor(policy, RFX_GAME_LAUNCH_FLOOR_PCT);
 	}
 
-	/* === TIME-BASED DUTY CYCLE THERMAL === */
-	if (rfx_pol->current_mode == RFX_MODE_GAMING) {
-    	if (!rfx_pol->tunables->gaming_mode &&
-        !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns))
+	    /* === TIME-BASED DUTY CYCLE THERMAL === */
+    if (rfx_pol->current_mode == RFX_MODE_GAMING) {
+        if (!rfx_pol->tunables->gaming_mode &&
+            !(rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns))
             rfx_thermal_duty_cycle(rfx_pol, time);
 
         if (is_prime) {
-			if (rfx_pol->tunables->gaming_mode) {
-    			unsigned int hard_floor = rfx_adaptive_floor(policy,
-        		RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
-
-    		/* gaming_mode=1: ignore stale throttle state,
-    		* let ROM policy->max be the ceiling */
-    			if (rfx_pol->in_heavy_mode && freq < hard_floor)
-        			freq = hard_floor;
-
-    		/* Clamp to policy->max = ROM/device thermal policy */
-    			if (freq > policy->max)
-        			freq = policy->max;
-
-			} else {
-				unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
-				unsigned int hard_floor = rfx_adaptive_floor(policy,
-					RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
-
-				if (rfx_pol->thermal_throttle_active) {
-					soft_cap = rfx_adaptive_max(policy,
-						RFX_THERMAL_THROTTLE_CAP_PCT);
-				}
-				if (soft_cap < hard_floor)
-					soft_cap = hard_floor;
-				if (freq > soft_cap)
-					freq = soft_cap;
-				if (freq < hard_floor && rfx_pol->in_heavy_mode)
-					freq = hard_floor;
-			}
-		} else if (!is_little) {
-
-				if (rfx_pol->tunables->gaming_mode) {
-    			/* gaming_mode=1: ROM decides ceiling via policy->max */
-    				if (freq > policy->max)
-        				freq = policy->max;
-    				if (rfx_pol->in_heavy_mode) {
-        			unsigned int big_floor = rfx_adaptive_floor(policy,
-            			RFX_BIG_INTERACTIVE_FLOOR_PCT);
-        			if (freq < big_floor)
-            			freq = big_floor;
-    				}
-			} else {
-				unsigned int big_cap = rfx_adaptive_max(policy,
-					rfx_pol->thermal_throttle_active
-					? RFX_THERMAL_THROTTLE_CAP_PCT
-					: RFX_BIG_GAMING_MAX_PCT);
-				if (freq > big_cap)
-					freq = big_cap;
-			}
-		}
-	}
+            if (rfx_pol->tunables->gaming_mode) {
+                unsigned int hard_floor = rfx_adaptive_floor(policy,
+                    RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+                if (rfx_pol->in_heavy_mode && freq < hard_floor)
+                    freq = hard_floor;
+                if (freq > policy->max)
+                    freq = policy->max;
+            } else {
+                unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
+                unsigned int hard_floor = rfx_adaptive_floor(policy,
+                    RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+                if (rfx_pol->thermal_throttle_active) {
+                    soft_cap = rfx_adaptive_max(policy,
+                        RFX_THERMAL_THROTTLE_CAP_PCT);
+                }
+                if (soft_cap < hard_floor)
+                    soft_cap = hard_floor;
+                if (freq > soft_cap)
+                    freq = soft_cap;
+                if (freq < hard_floor && rfx_pol->in_heavy_mode)
+                    freq = hard_floor;
+            }
+        } else if (!is_little) {
+            if (rfx_pol->tunables->gaming_mode) {
+                if (freq > policy->max)
+                    freq = policy->max;
+                if (rfx_pol->in_heavy_mode) {
+                    unsigned int big_floor = rfx_adaptive_floor(policy,
+                        RFX_BIG_INTERACTIVE_FLOOR_PCT);
+                    if (freq < big_floor)
+                        freq = big_floor;
+                }
+            } else {
+                unsigned int big_cap = rfx_adaptive_max(policy,
+                    rfx_pol->thermal_throttle_active
+                    ? RFX_THERMAL_THROTTLE_CAP_PCT
+                    : RFX_BIG_GAMING_MAX_PCT);
+                if (freq > big_cap)
+                    freq = big_cap;
+            }
+        }
+    }
 
 	/* ROM Override: auto-detected at init, adjusts PRIME floor/cap.
 	 * Applied AFTER thermal cap so ROM override respects thermal limits.
@@ -1466,7 +1454,7 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	}
 
 			if (is_big) {
-			heavy_cond = (util_pct >= RFX_SUSTAIN_HEAVY_ENTER_PCT)
+				heavy_cond = (util_pct >= RFX_SUSTAIN_HEAVY_ENTER_PCT)
           				&& (rfx_c->filtered_busy_pct >= RFX_SUSTAIN_HEAVY_BUSY_PCT || rfx_c->busy_pct >= 18);
 
 			if (!rfx_pol->in_heavy_mode) {
@@ -1887,9 +1875,10 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	effective_util = rfx_blend_util(rfx_c, effective_util, max_cap, time,
 					hispeed_pct);
 		{
-		bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
-		rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util, max_cap, is_big_cluster, time);
-	}
+        bool is_big_cluster = (max_cap > RFX_LITTLE_CAP_THRESHOLD);
+        rfx_update_adaptive_mode(rfx_pol, rfx_c, effective_util,
+                                 max_cap, is_big_cluster, time);
+    	}
 
 	act_force = rfx_act_update(rfx_c, effective_util, max_cap, time,
 				   &freq_cap_khz);
