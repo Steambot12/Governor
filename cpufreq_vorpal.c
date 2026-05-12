@@ -75,8 +75,8 @@ extern unsigned int sysctl_sched_latency;
 /* === C4: WAKEUP BOOST === */
 /* Bypass up_rate_limit saat transisi idle→busy */
 #define RFX_WAKEUP_IDLE_THRESH_PCT           8
-#define RFX_WAKEUP_BUSY_THRESH_PCT          38
-#define RFX_WAKEUP_BOOST_TICKS               2
+#define RFX_WAKEUP_BUSY_THRESH_PCT          30
+#define RFX_WAKEUP_BOOST_TICKS               3
 
 /* === UPDATED UI TRANSITION BOOST TIMER === */
 #define RFX_UI_TRANSITION_BOOST_NS          (600ULL * NSEC_PER_MSEC)
@@ -113,8 +113,8 @@ extern unsigned int sysctl_sched_latency;
 
 /* === RENDER BOOST - lebih pendek & tepat === */
 /* Digunakan di sudden_spike & wuwa_anim path saja */
-#define RFX_RENDER_SPIKE_BOOST_NS       (800ULL * NSEC_PER_MSEC)
-#define RFX_RENDER_SUSTAIN_BOOST_NS     (300ULL * NSEC_PER_MSEC)
+#define RFX_RENDER_SPIKE_BOOST_NS       (1200ULL * NSEC_PER_MSEC)
+#define RFX_RENDER_SUSTAIN_BOOST_NS     (500ULL * NSEC_PER_MSEC)
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
 #define CPUFREQ_VORPAL_DEFAULT_HISPEED_WINDOW_US    30
@@ -135,20 +135,20 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (400ULL * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD                  8
+#define RFX_BURST_GUARD_NS    (600ULL * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD                  6
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
 #define RFX_SUSTAIN_HEAVY_ENTER_PCT   35
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    10
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT     8
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS         5
+#define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (10000ULL * NSEC_PER_MSEC)
-#define RFX_GAMING_TUNABLE_SUSTAIN_NS   (30000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (15000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_TUNABLE_SUSTAIN_NS   (45000ULL * NSEC_PER_MSEC)
 
 /* === PRIME GAMING HYST - jangan expire prematur === */
 /* dipakai di rfx_detect_mode() */
@@ -158,7 +158,7 @@ extern unsigned int sysctl_sched_latency;
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              85
 #define RFX_BIG_GAMING_MAX_PCT          88
-#define RFX_PRIME_GAMING_FLOOR_PCT      78
+#define RFX_PRIME_GAMING_FLOOR_PCT      80
 #define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
@@ -195,7 +195,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_THERMAL_THROTTLE_BURST_NS    (600ULL * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     	88
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  80
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  82
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000ULL * NSEC_PER_MSEC)
@@ -1136,7 +1136,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
             effective_delay = 6000 * NSEC_PER_USEC;
 	} else {
     		effective_delay = rfx_pol->tunables->gaming_mode
-        		? (50000 * NSEC_PER_USEC)   /* gaming: 50ms — was 22ms */
+        		? (80000 * NSEC_PER_USEC)   /* gaming: 50ms — was 22ms */
         		: (22000 * NSEC_PER_USEC);
 		}
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
@@ -1181,7 +1181,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
         		effective_down_delay = 6000 * NSEC_PER_USEC;
     		else
         		effective_down_delay = rfx_pol->tunables->gaming_mode
-    				? (80000 * NSEC_PER_USEC)   /* gaming: 80ms — was 35ms */
+    				? (120000 * NSEC_PER_USEC)   /* was 80ms */
     				: (35000 * NSEC_PER_USEC);
 		}
 
