@@ -42,7 +42,7 @@ extern unsigned int sysctl_sched_latency;
 /* Target 120fps = 8.333ms per frame */
 #define RFX_FRAME_INTERVAL_120FPS_NS    (8333ULL * NSEC_PER_USEC)
 #define RFX_FRAME_PACING_WINDOW         6
-#define RFX_FRAME_PACING_JITTER_NS      (2000ULL * NSEC_PER_USEC)
+#define RFX_FRAME_PACING_JITTER_NS      (2500ULL * NSEC_PER_USEC)
 #define RFX_FRAME_PACING_BOOST_NS       (4000ULL * NSEC_PER_MSEC)
 #define RFX_FRAME_PACING_MIN_SCORE      4
 
@@ -186,7 +186,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_THERMAL_THROTTLE_BURST_NS    (600ULL * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     	88
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  80
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  82
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000ULL * NSEC_PER_MSEC)
@@ -1959,16 +1959,18 @@ if (rfx_pol->tunables->gaming_mode) {
     unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
     unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
     unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-	bool sudden_spike    = (h1 > 22) && (h1 > h2 + 12);  /* turunkan threshold */
-	bool wuwa_anim       = (h1 > 25) && (h3 > 25) && (h2 < 18);
-	bool sustained_heavy = (h1 >= 30) && (h2 >= 30) && (h3 >= 30); /* lebih sensitif */
-	bool rising          = h1 > h2 && h2 > h3 && h1 > 15;
+	bool sudden_spike    = (h1 > 20) && (h1 > h2 + 10);
+	bool wuwa_anim       = (h1 > 25) && (h3 > 20) && (h2 < 25);
+	bool wuwa_escalate   = (h1 > 40) && (h2 > 15) && (h1 > h2 * 2);
+	bool sustained_heavy = (h1 >= 28) && (h2 >= 25) && (h3 >= 20);
+	bool rising          = h1 > h2 && h2 > h3 && h1 > 12;
 
-    if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
+	if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate) {
         rfx_pol->in_heavy_mode      = true;
-        rfx_pol->gaming_lock_end_ns = time +
-            (sudden_spike || wuwa_anim ? (3000ULL * NSEC_PER_MSEC)  /* was 1200ms */
-                                       : (1500ULL * NSEC_PER_MSEC)); /* was 800ms */
+		rfx_pol->gaming_lock_end_ns = time +
+    			(wuwa_escalate ? (4000ULL * NSEC_PER_MSEC)
+    			: (sudden_spike || wuwa_anim) ? (3000ULL * NSEC_PER_MSEC)
+    			: (1500ULL * NSEC_PER_MSEC));
         rfx_pol->render_urgency_active = true;
         rfx_pol->render_boost_end_ns = time +
             (sudden_spike || wuwa_anim
