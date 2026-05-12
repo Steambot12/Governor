@@ -143,13 +143,13 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_SUSTAIN_EXIT_TICKS         5
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (8000ULL * NSEC_PER_MSEC)
-#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (45000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (12000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (60000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT              85
-#define RFX_BIG_GAMING_MAX_PCT          88
-#define RFX_PRIME_GAMING_FLOOR_PCT      78
+#define RFX_BIG_GAMING_MAX_PCT          90
+#define RFX_PRIME_GAMING_FLOOR_PCT      82
 #define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
@@ -181,12 +181,12 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (15000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (10000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (600ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT     	88
-#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    90
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  82
+#define RFX_THERMAL_WINDOW_NS            (20000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (16000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (300ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT     	92
+#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    94
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  85
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000ULL * NSEC_PER_MSEC)
@@ -663,7 +663,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			rfx_pol->sustain_exit_ticks = 0;
 		} else {
 			u64 hyst_ns = (rfx_pol->tunables->cluster_type == RFX_CLUSTER_PRIME)
-				      ? (3000ULL * NSEC_PER_MSEC)
+				      ? (8000ULL * NSEC_PER_MSEC)
 				      : (8000ULL * NSEC_PER_MSEC);
 
 			if (!rfx_pol->gaming_lock_end_ns ||
@@ -1004,6 +1004,11 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 		return;
 	}
 
+	if (rfx_pol->tunables->gaming_mode &&
+        rfx_pol->thermal_sustain_window_count > 2) {
+        rfx_pol->thermal_sustain_window_count = 2;
+    }
+
 	effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
 		? RFX_THERMAL_WINDOW_SHRINK_NS
 		: RFX_THERMAL_WINDOW_NS;
@@ -1171,7 +1176,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
         		effective_down_delay = 6000 * NSEC_PER_USEC;
     		else
         		effective_down_delay = rfx_pol->tunables->gaming_mode
-    				? (80000 * NSEC_PER_USEC)   /* gaming: 80ms — was 35ms */
+    				? (150000 * NSEC_PER_USEC)   /* gaming: 80ms — was 35ms */
     				: (35000 * NSEC_PER_USEC);
 		}
 
