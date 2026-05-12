@@ -119,12 +119,12 @@ const_debug unsigned int sysctl_sched_migration_cost	= 800000UL;
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 2;
+u8   __read_mostly sched_burst_smoothness_long  = 1;
 u8   __read_mostly sched_burst_smoothness_short = 0;
 u8   __read_mostly sched_burst_fork_atavistic   = 0;
-u8   __read_mostly sched_burst_penalty_offset   = 24;
-uint __read_mostly sched_burst_penalty_scale    = 1100;
-uint __read_mostly sched_burst_cache_lifetime   = 20000000;
+u8   __read_mostly sched_burst_penalty_offset   = 22;
+uint __read_mostly sched_burst_penalty_scale    = 900;
+uint __read_mostly sched_burst_cache_lifetime   = 18000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
