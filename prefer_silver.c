@@ -18,8 +18,8 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 55;
-int sysctl_cpu_util_thresh   = 75;
+int sysctl_heavy_task_thresh = 38;
+int sysctl_cpu_util_thresh   = 70;
 int sysctl_freq_ratio_thresh = 82;
 int sysctl_gaming_mode_active __read_mostly = 0;
 EXPORT_SYMBOL(sysctl_gaming_mode_active);
@@ -30,8 +30,8 @@ void prefer_silver_set_gaming(int active)
 }
 EXPORT_SYMBOL_GPL(prefer_silver_set_gaming);
 
-unsigned long sysctl_big_core_guard_ns = 150000000UL;
-int           sysctl_burst_thresh      = 30;
+unsigned long sysctl_big_core_guard_ns = 200000000UL;
+int           sysctl_burst_thresh      = 35;
 unsigned long sysctl_burst_decay_ns    = 350000000UL;
 
 
@@ -569,11 +569,12 @@ int find_best_silver_cpu(struct task_struct *p)
 	if (!ps_ensure_detected())
 		return -1;
 
-	if (sysctl_gaming_mode_active) {
-    	atomic_inc(&ps_miss_count);
-    	atomic_inc(&ps_miss_bigcore);
-    	return -1;
-    }
+	/* Gaming mode: bypass silver sepenuhnya */
+	if (READ_ONCE(sysctl_gaming_mode_active)) {
+		atomic_inc(&ps_miss_count);
+		atomic_inc(&ps_miss_bigcore);
+		return -1;
+	}
 
 	if (!ps_check_uclamp(p)) {
 		atomic_inc(&ps_miss_count);
@@ -586,19 +587,28 @@ int find_best_silver_cpu(struct task_struct *p)
 		return -1;
 	}
 	if (!ps_check_burst_decay(p)) {
-    	atomic_inc(&ps_miss_count);
-    	atomic_inc(&ps_miss_burst);
-    	return -1;
-	}
-	task_util_pct = ps_task_util_pct(p);
-/* Hapus ps_check_burst_decay kedua — sudah dicek di atas */
-	if (task_util_pct >= (unsigned long)sysctl_heavy_task_thresh) {
-    	atomic_inc(&ps_miss_count);
-    	atomic_inc(&ps_miss_task_heavy);
-    	return -1;
+		atomic_inc(&ps_miss_count);
+		atomic_inc(&ps_miss_burst);
+		return -1;
 	}
 
-	skip_freq_gate = (task_util_pct < 5);
+	task_util_pct = ps_task_util_pct(p);
+
+	if (task_util_pct >= (unsigned long)sysctl_heavy_task_thresh) {
+		atomic_inc(&ps_miss_count);
+		atomic_inc(&ps_miss_task_heavy);
+		return -1;
+	}
+
+	/*
+	 * Double-check gaming setelah semua guards — cegah race condition
+	 * antara WRITE_ONCE di prefer_silver_set_gaming() dan path ini.
+	 */
+	if (READ_ONCE(sysctl_gaming_mode_active))
+		return -1;
+
+	/* Hanya task yang hampir idle (<3%) yang skip freq gate */
+	skip_freq_gate = (task_util_pct < 3);
 
 retry:
 	for_each_cpu(i, &ps_silver_online) {
@@ -648,12 +658,18 @@ retry:
 		return best_cpu;
 	}
 
+	/*
+	 * Fallback path — hanya izinkan jika silver benar-benar lebih idle:
+	 * 1. Silver fallback util < 45% (bukan 55/65%)
+	 * 2. Silver util ABSOLUT lebih rendah dari gold (hapus margin 105%)
+	 * Ini mencegah prime core collapse akibat silver overcommit.
+	 */
 	if (best_cpu_fallback >= 0 && !aff_blocked) {
 		unsigned long g_util;
 		unsigned long fallback_util_pct;
 
 		fallback_util_pct = ps_cpu_util_pct(best_cpu_fallback);
-		if (fallback_util_pct >= 55)
+		if (fallback_util_pct >= 45)
 			goto miss;
 
 		for_each_cpu(i, cpu_online_mask) {
@@ -666,8 +682,12 @@ retry:
 				min_gold_util = g_util;
 		}
 
+		/*
+		 * Silver harus lebih idle dari gold secara absolut.
+		 * Hapus multiplier 105/100 — silver 54% vs gold 52% bukan "lebih baik".
+		 */
 		if (min_gold_util == ULONG_MAX ||
-		    min_util_fallback <= (min_gold_util * 105 / 100)) {
+		    min_util_fallback < min_gold_util) {
 			atomic_inc(&ps_hit_count);
 			return best_cpu_fallback;
 		}
