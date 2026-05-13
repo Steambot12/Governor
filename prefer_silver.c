@@ -18,9 +18,9 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 35;
-int sysctl_cpu_util_thresh   = 84;
-int sysctl_freq_ratio_thresh = 97;
+int sysctl_heavy_task_thresh = 42;
+int sysctl_cpu_util_thresh   = 80;
+int sysctl_freq_ratio_thresh = 82;
 int sysctl_gaming_mode_active __read_mostly = 0;
 EXPORT_SYMBOL(sysctl_gaming_mode_active);
 
@@ -30,9 +30,9 @@ void prefer_silver_set_gaming(int active)
 }
 EXPORT_SYMBOL_GPL(prefer_silver_set_gaming);
 
-unsigned long sysctl_big_core_guard_ns = 120000000UL;
-int           sysctl_burst_thresh      = 25;
-unsigned long sysctl_burst_decay_ns    = 150000000UL;
+unsigned long sysctl_big_core_guard_ns = 80000000UL;
+int           sysctl_burst_thresh      = 20;
+unsigned long sysctl_burst_decay_ns    = 200000000UL;
 
 
 /* ------------------------------------------------------------------ *
@@ -484,7 +484,7 @@ static inline bool ps_check_bigcore_recency(struct task_struct *p)
 
     now = ktime_get_ns();
 
-    guard_ns = max(sysctl_big_core_guard_ns, 40000000UL);
+    guard_ns = max(sysctl_big_core_guard_ns, 20000000UL);
 
     return (now - last_big) >= guard_ns;
 }
@@ -516,7 +516,7 @@ static inline bool ps_check_burst_decay(struct task_struct *p)
 static inline int ps_effective_freq_thresh(void)
 {
     if (sysctl_gaming_mode_active)
-        return max(sysctl_freq_ratio_thresh - 15, 50);
+        return max(sysctl_freq_ratio_thresh - 5, 60);
     return sysctl_freq_ratio_thresh;
 }
 
@@ -567,8 +567,9 @@ int find_best_silver_cpu(struct task_struct *p)
 		return -1;
 
 	if (sysctl_gaming_mode_active) {
-        atomic_inc(&ps_miss_count);
-        return -1;
+    	atomic_inc(&ps_miss_count);
+    	atomic_inc(&ps_miss_bigcore);
+    	return -1;
     }
 
 	if (!ps_check_uclamp(p)) {
