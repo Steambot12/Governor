@@ -18,8 +18,8 @@
  * Tunables
  * ------------------------------------------------------------------ */
 int sysctl_prefer_silver     = 1;
-int sysctl_heavy_task_thresh = 42;
-int sysctl_cpu_util_thresh   = 80;
+int sysctl_heavy_task_thresh = 55;
+int sysctl_cpu_util_thresh   = 75;
 int sysctl_freq_ratio_thresh = 82;
 int sysctl_gaming_mode_active __read_mostly = 0;
 EXPORT_SYMBOL(sysctl_gaming_mode_active);
@@ -30,9 +30,9 @@ void prefer_silver_set_gaming(int active)
 }
 EXPORT_SYMBOL_GPL(prefer_silver_set_gaming);
 
-unsigned long sysctl_big_core_guard_ns = 80000000UL;
-int           sysctl_burst_thresh      = 20;
-unsigned long sysctl_burst_decay_ns    = 200000000UL;
+unsigned long sysctl_big_core_guard_ns = 150000000UL;
+int           sysctl_burst_thresh      = 30;
+unsigned long sysctl_burst_decay_ns    = 350000000UL;
 
 
 /* ------------------------------------------------------------------ *
@@ -423,6 +423,9 @@ void prefer_silver_update_task(struct task_struct *p, int cpu)
 	if (!sysctl_prefer_silver || !atomic_read(&ps_detected))
 		return;
 
+	if (READ_ONCE(sysctl_gaming_mode_active))
+        return;
+
 	is_big = !cpu_is_silver(cpu);
 	util   = ps_task_util(p);
 	now    = ktime_get_ns();
@@ -595,7 +598,7 @@ int find_best_silver_cpu(struct task_struct *p)
     	return -1;
 	}
 
-	skip_freq_gate = (task_util_pct < 8);
+	skip_freq_gate = (task_util_pct < 5);
 
 retry:
 	for_each_cpu(i, &ps_silver_online) {
@@ -650,7 +653,7 @@ retry:
 		unsigned long fallback_util_pct;
 
 		fallback_util_pct = ps_cpu_util_pct(best_cpu_fallback);
-		if (fallback_util_pct >= 65)
+		if (fallback_util_pct >= 55)
 			goto miss;
 
 		for_each_cpu(i, cpu_online_mask) {
