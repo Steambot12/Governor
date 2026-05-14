@@ -132,7 +132,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (250ULL * NSEC_PER_MSEC)
+#define RFX_BURST_GUARD_NS    (400ULL * NSEC_PER_MSEC)
 #define RFX_BURST_DROP_THRESHOLD                  12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
@@ -1132,7 +1132,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
             effective_delay = 6000 * NSEC_PER_USEC;
 	} else {
     		effective_delay = rfx_pol->tunables->gaming_mode
-        		? (50000 * NSEC_PER_USEC)   /* gaming: 50ms — was 22ms */
+        		? (80000 * NSEC_PER_USEC)   /* gaming: 50ms — was 22ms */
         		: (22000 * NSEC_PER_USEC);
 		}
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
@@ -1177,7 +1177,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
         		effective_down_delay = 6000 * NSEC_PER_USEC;
     		else
         		effective_down_delay = rfx_pol->tunables->gaming_mode
-    				? (150000 * NSEC_PER_USEC)   /* gaming: 80ms — was 35ms */
+    				? (200000 * NSEC_PER_USEC)   /* gaming: 80ms — was 35ms */
     				: (35000 * NSEC_PER_USEC);
 		}
 
@@ -1965,10 +1965,10 @@ if (rfx_pol->tunables->gaming_mode) {
     unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
     unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
     unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-	bool sudden_spike    = (h1 > 20) && (h1 > h2 + 10);
+	bool sudden_spike  	 = (h1 > 15) && (h1 > h2 + 8);
 	bool wuwa_anim       = (h1 > 25) && (h3 > 20) && (h2 < 25);
 	bool wuwa_escalate   = (h1 > 40) && (h2 > 15) && (h1 > h2 * 2);
-	bool sustained_heavy = (h1 >= 28) && (h2 >= 25) && (h3 >= 20);
+	bool sustained_heavy = (h1 >= 22) && (h2 >= 18) && (h3 >= 15);
 	bool rising          = h1 > h2 && h2 > h3 && h1 > 12;
 
 	if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate) {
