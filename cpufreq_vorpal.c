@@ -42,7 +42,8 @@ extern unsigned int sysctl_sched_latency;
 /* Target 120fps = 8.333ms per frame */
 #define RFX_FRAME_INTERVAL_120FPS_NS    (8333ULL * NSEC_PER_USEC)
 #define RFX_FRAME_PACING_WINDOW         6
-#define RFX_FRAME_PACING_JITTER_NS      (2500ULL * NSEC_PER_USEC)
+#define RFX_FRAME_PACING_JITTER_NS      (5000ULL * NSEC_PER_USEC)
+#define RFX_FRAME_INTERVAL_60FPS_NS     (16666ULL * NSEC_PER_USEC)
 #define RFX_FRAME_PACING_BOOST_NS       (4000ULL * NSEC_PER_MSEC)
 #define RFX_FRAME_PACING_MIN_SCORE      4
 
@@ -181,9 +182,9 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (20000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS            (25000ULL * NSEC_PER_MSEC)
 #define RFX_THERMAL_WINDOW_SHRINK_NS     (16000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (300ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (150ULL * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     	92
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    94
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  85
@@ -652,7 +653,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		rfx_pol->force_idle         = false;
 		rfx_pol->sustain_exit_ticks = 0;
 
-		if (util_pct >= 3) {
+		if (util_pct >= 2) {
 			rfx_pol->in_heavy_mode         = true;
 			rfx_pol->gaming_lock_end_ns    = time + RFX_GAMING_TUNABLE_SUSTAIN_NS;
 			rfx_pol->render_urgency_active = true;
@@ -663,8 +664,8 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			rfx_pol->sustain_exit_ticks = 0;
 		} else {
 			u64 hyst_ns = (rfx_pol->tunables->cluster_type == RFX_CLUSTER_PRIME)
-				      ? (8000ULL * NSEC_PER_MSEC)
-				      : (8000ULL * NSEC_PER_MSEC);
+				      ? (15000ULL * NSEC_PER_MSEC)
+				      : (12000ULL * NSEC_PER_MSEC);
 
 			if (!rfx_pol->gaming_lock_end_ns ||
 			    (time - rfx_pol->gaming_lock_end_ns) > hyst_ns)
@@ -1974,7 +1975,7 @@ if (rfx_pol->tunables->gaming_mode) {
         rfx_pol->in_heavy_mode      = true;
 		rfx_pol->gaming_lock_end_ns = time +
     			(wuwa_escalate ? (4000ULL * NSEC_PER_MSEC)
-    			: (sudden_spike || wuwa_anim) ? (3000ULL * NSEC_PER_MSEC)
+    			: (sudden_spike || wuwa_anim) ? (5000ULL * NSEC_PER_MSEC)
     			: (1500ULL * NSEC_PER_MSEC));
         rfx_pol->render_urgency_active = true;
         rfx_pol->render_boost_end_ns = time +
