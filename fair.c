@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 6000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
+unsigned int sysctl_sched_latency			= 4000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 4000000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 5000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
@@ -107,24 +107,24 @@ unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1500000ULL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1500000ULL;
+unsigned int sysctl_sched_wakeup_granularity			= 1000000ULL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000ULL;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 800000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 1000000UL;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
 u8   __read_mostly sched_burst_smoothness_long  = 1;
 u8   __read_mostly sched_burst_smoothness_short = 1;
-u8   __read_mostly sched_burst_fork_atavistic   = 0;
+u8   __read_mostly sched_burst_fork_atavistic   = 2;
 u8   __read_mostly sched_burst_penalty_offset   = 24;
-uint __read_mostly sched_burst_penalty_scale    = 750;
-uint __read_mostly sched_burst_cache_lifetime   = 18000000;
+uint __read_mostly sched_burst_penalty_scale    = 1280;
+uint __read_mostly sched_burst_cache_lifetime   = 60000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
@@ -550,7 +550,7 @@ find_matching_se(struct sched_entity **se, struct sched_entity **pse)
 #endif	/* CONFIG_FAIR_GROUP_SCHED */
 
 #ifdef CONFIG_SCHED_BORE
-#define MAX_BURST_PENALTY (28U <<2)
+#define MAX_BURST_PENALTY (39U <<2)
 
 static inline u32 log2plus1_u64_u32f8(u64 v) {
 	u32 msb = fls64(v);
@@ -559,14 +559,14 @@ static inline u32 log2plus1_u64_u32f8(u64 v) {
 }
 
 static inline u32 calc_burst_penalty(u64 burst_time) {
-    u32 greed, tolerance, penalty, scaled_penalty;
-    
-    greed = log2plus1_u64_u32f8(burst_time);
-    tolerance = sched_burst_penalty_offset << 8;
-    penalty = max(0, (s32)(greed - tolerance));
-    scaled_penalty = penalty * sched_burst_penalty_scale >> 16;
+	u32 greed, tolerance, penalty, scaled_penalty;
+	
+	greed = log2plus1_u64_u32f8(burst_time);
+	tolerance = sched_burst_penalty_offset << 8;
+	penalty = max(0, (s32)(greed - tolerance));
+	scaled_penalty = penalty * sched_burst_penalty_scale >> 16;
 
-    return min(MAX_BURST_PENALTY, scaled_penalty);
+	return min(MAX_BURST_PENALTY, scaled_penalty);
 }
 
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
