@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 4000000UL;
-static unsigned int normalized_sysctl_sched_latency	= 4000000UL;
+unsigned int sysctl_sched_latency			= 3000000UL;
+static unsigned int normalized_sysctl_sched_latency	= 3000000UL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 5000000UL;
  static unsigned int normalized_sysctl_sched_latency	= 5000000UL;
@@ -123,8 +123,8 @@ u8   __read_mostly sched_burst_smoothness_long  = 1;
 u8   __read_mostly sched_burst_smoothness_short = 1;
 u8   __read_mostly sched_burst_fork_atavistic   = 2;
 u8   __read_mostly sched_burst_penalty_offset   = 24;
-uint __read_mostly sched_burst_penalty_scale    = 1280;
-uint __read_mostly sched_burst_cache_lifetime   = 60000000;
+uint __read_mostly sched_burst_penalty_scale    = 1000;
+uint __read_mostly sched_burst_cache_lifetime   = 80000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
