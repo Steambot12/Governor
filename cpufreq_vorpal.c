@@ -43,7 +43,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_FRAME_INTERVAL_120FPS_NS    (8333ULL * NSEC_PER_USEC)
 #define RFX_FRAME_PACING_WINDOW         6
 #define RFX_FRAME_PACING_JITTER_NS      (2500ULL * NSEC_PER_USEC)
-#define RFX_FRAME_PACING_BOOST_NS       (4000ULL * NSEC_PER_MSEC)
+#define RFX_FRAME_PACING_BOOST_NS       (6000ULL * NSEC_PER_MSEC)
 #define RFX_FRAME_PACING_MIN_SCORE      4
 
 /* === B: EAS / ENERGY MODEL FLOOR === */
@@ -53,10 +53,10 @@ extern unsigned int sysctl_sched_latency;
 
 /* === C1: PEAK HEADROOM RESCUE === */
 /* Rescue saat freq starvation: load tinggi tapi freq rendah */
-#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     88
+#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     82
 #define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      85
 #define RFX_PEAK_RESCUE_STARVE_STREAK       3
-#define RFX_PEAK_RESCUE_HOLD_NS             (50ULL * NSEC_PER_MSEC)
+#define RFX_PEAK_RESCUE_HOLD_NS             (80ULL * NSEC_PER_MSEC)
 #define RFX_PEAK_RESCUE_JUMP_PCT            98
 #define RFX_PEAK_RESCUE_STREAK_MAX          16
 
@@ -108,7 +108,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   25000
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   50000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
@@ -144,7 +144,8 @@ extern unsigned int sysctl_sched_latency;
 
 /* TUNED: Shorter gaming lock for thermal balance */
 #define RFX_GAMING_LOCK_DURATION_NS   (20000ULL * NSEC_PER_MSEC)
-#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (60000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (90000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_DOWN_DELAY_US   	200000
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT             100
@@ -1974,7 +1975,7 @@ if (rfx_pol->tunables->gaming_mode) {
     unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
 	bool sudden_spike    = (h1 > 20) && (h1 > h2 + 10);
 	bool wuwa_anim       = (h1 > 25) && (h3 > 20) && (h2 < 25);
-	bool wuwa_escalate   = (h1 > 40) && (h2 > 15) && (h1 > h2 * 2);
+	bool wuwa_escalate   = (h1 > 28) && (h2 > 10) && (h1 > h2 + 15);
 	bool sustained_heavy = (h1 >= 28) && (h2 >= 25) && (h3 >= 20);
 	bool rising          = h1 > h2 && h2 > h3 && h1 > 12;
 
