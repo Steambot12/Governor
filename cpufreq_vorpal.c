@@ -88,7 +88,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    8000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    18000
 
 /* Default: Ultra-fast 10us for instant response */
 #define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        10
@@ -150,7 +150,7 @@ extern unsigned int sysctl_sched_latency;
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT             100
 #define RFX_BIG_GAMING_MAX_PCT         100
-#define RFX_PRIME_GAMING_FLOOR_PCT      88
+#define RFX_PRIME_GAMING_FLOOR_PCT      85
 #define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
@@ -199,8 +199,11 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_LITTLE_CAP_THRESHOLD     614
 #define RFX_PRIME_CAP_THRESHOLD      1000
 #define RFX_PRIME_IDLE_CAP_PCT       50
-#define RFX_PRIME_LOW_LOAD_THRESHOLD 20
+#define RFX_PRIME_LOW_LOAD_THRESHOLD 15
 #define RFX_BIG_DROP_PCT             13
+#define RFX_WUWA_SUSTAINED_LOAD_PCT  32
+#define RFX_WUWA_SUSTAINED_STREAK     3
+#define RFX_WUWA_LOCK_NS             (8000ULL * NSEC_PER_MSEC)
 
 /* === ACTIVITY STATE MACHINE - FAST IDLE === */
 
@@ -379,6 +382,9 @@ struct rfx_policy {
     /* === v1.1: Peak Hysteresis === */
     u8              peak_hyst_streak;
     unsigned int    peak_hyst_prev_freq;
+
+	u8              wuwa_sustained_streak;
+	u64             wuwa_sustained_lock_ns;
 };
 
 struct rfx_cpu {
@@ -1568,7 +1574,9 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
         ? (600ULL * NSEC_PER_MSEC)   /* gaming: 600ms */
         : (400ULL * NSEC_PER_MSEC); // PRIME: 200ms
 	else if (is_big)
-    	interactive_dur = 1500 * NSEC_PER_MSEC; // BIG: 1.5s
+    	interactive_dur = rfx_pol->tunables->gaming_mode
+        ? (2500ULL * NSEC_PER_MSEC)
+        : (1500ULL * NSEC_PER_MSEC);
 	else
     	interactive_dur = 500 * NSEC_PER_MSEC;
     	rfx_pol->interactive_end_ns = time + interactive_dur;
@@ -1973,18 +1981,20 @@ if (rfx_pol->tunables->gaming_mode) {
     unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
     unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
     unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-	bool sudden_spike    = (h1 > 20) && (h1 > h2 + 10);
-	bool wuwa_anim       = (h1 > 25) && (h3 > 20) && (h2 < 25);
-	bool wuwa_escalate   = (h1 > 28) && (h2 > 10) && (h1 > h2 + 15);
-	bool sustained_heavy = (h1 >= 28) && (h2 >= 25) && (h3 >= 20);
+	bool sudden_spike    = (h1 > 18) && (h1 > h2 + 8);
+	bool wuwa_anim       = (h1 > 22) && (h3 > 18) && (h2 < 22);
+	bool wuwa_escalate   = (h1 > 24) && (h2 > 8) && (h1 > h2 + 12);
+	bool sustained_heavy = (h1 >= 24) && (h2 >= 22) && (h3 >= 18);
+	bool wuwa_city       = (h1 >= 18) && (h2 >= 16) && (h3 >= 15) && (h1 < 40);
 	bool rising          = h1 > h2 && h2 > h3 && h1 > 12;
 
-	if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate) {
+	if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate || wuwa_city) {
         rfx_pol->in_heavy_mode      = true;
 		rfx_pol->gaming_lock_end_ns = time +
-    			(wuwa_escalate ? (4000ULL * NSEC_PER_MSEC)
-    			: (sudden_spike || wuwa_anim) ? (3000ULL * NSEC_PER_MSEC)
-    			: (1500ULL * NSEC_PER_MSEC));
+    		(wuwa_escalate ? (4000ULL * NSEC_PER_MSEC)
+    		: (sudden_spike || wuwa_anim) ? (3000ULL * NSEC_PER_MSEC)
+    		: wuwa_city ? (6000ULL * NSEC_PER_MSEC)   /* kota: lock lebih panjang */
+    		: (1500ULL * NSEC_PER_MSEC));
         rfx_pol->render_urgency_active = true;
         rfx_pol->render_boost_end_ns = time +
             (sudden_spike || wuwa_anim
@@ -2911,6 +2921,8 @@ static int rfx_start(struct cpufreq_policy *policy)
     rfx_pol->migration_in_until_ns      = 0;
     rfx_pol->peak_hyst_streak           = 0;
     rfx_pol->peak_hyst_prev_freq        = 0;
+	rfx_pol->wuwa_sustained_streak 		= 0;
+	rfx_pol->wuwa_sustained_lock_ns 	= 0;
 
     /* === v1.1: EAS energy-knee cache — komputasi sekali di start === */
 	if (rfx_pol->policy &&
