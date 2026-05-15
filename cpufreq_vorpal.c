@@ -131,7 +131,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (400ULL * NSEC_PER_MSEC)
+#define RFX_BURST_GUARD_NS    (250ULL * NSEC_PER_MSEC)
 #define RFX_BURST_DROP_THRESHOLD                  12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
@@ -145,7 +145,7 @@ extern unsigned int sysctl_sched_latency;
 /* TUNED: Shorter gaming lock for thermal balance */
 #define RFX_GAMING_LOCK_DURATION_NS   (20000ULL * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (90000ULL * NSEC_PER_MSEC)
-#define RFX_GAMING_DOWN_DELAY_US   	300000
+#define RFX_GAMING_DOWN_DELAY_US   	180000
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT             100
@@ -1138,7 +1138,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
             effective_delay = 6000 * NSEC_PER_USEC;
 	} else {
     		effective_delay = rfx_pol->tunables->gaming_mode
-        		? (200000 * NSEC_PER_USEC)   /* gaming: 50ms — was 22ms */
+        		? (120000 * NSEC_PER_USEC)
         		: (22000 * NSEC_PER_USEC);
 		}
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
@@ -1985,8 +1985,9 @@ if (rfx_pol->tunables->gaming_mode) {
 	bool wuwa_anim       = (h1 > 22) && (h3 > 18) && (h2 < 22);
 	bool wuwa_escalate   = (h1 > 24) && (h2 > 8) && (h1 > h2 + 12);
 	bool sustained_heavy = (h1 >= 24) && (h2 >= 22) && (h3 >= 18);
-	bool wuwa_multienemy = (h1 >= 28) && (h2 >= 22) && (h3 >= 20);
-	bool wuwa_city       = (h1 >= 18) && (h2 >= 16) && (h3 >= 15) && (h1 < 40);
+	bool wuwa_multienemy = (h1 >= 30) && (h2 >= 24) && (h3 >= 20);
+	bool wuwa_combat     = (h1 >= 22) && (h2 >= 18) && (h3 >= 15) && (h1 < 40);
+	bool wuwa_city       = (h1 >= 14) && (h2 >= 12) && (h3 >= 10) && (h1 < 30);
 	bool rising          = h1 > h2 && h2 > h3 && h1 > 12;
 
 	if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate || wuwa_city) {
@@ -1994,8 +1995,9 @@ if (rfx_pol->tunables->gaming_mode) {
 		rfx_pol->gaming_lock_end_ns = time +
     		(wuwa_escalate ? (4000ULL * NSEC_PER_MSEC)
     		: (sudden_spike || wuwa_anim) ? (3000ULL * NSEC_PER_MSEC)
-    		: wuwa_multienemy ? (10000ULL * NSEC_PER_MSEC)
-			: wuwa_city ? (6000ULL * NSEC_PER_MSEC)
+    		: wuwa_multienemy ? (12000ULL * NSEC_PER_MSEC)
+			: wuwa_combat     ? (8000ULL  * NSEC_PER_MSEC)
+			: wuwa_city ? (5000ULL * NSEC_PER_MSEC)
     		: (1500ULL * NSEC_PER_MSEC));
         rfx_pol->render_urgency_active = true;
         rfx_pol->render_boost_end_ns = time +
