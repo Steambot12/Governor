@@ -53,9 +53,9 @@ extern unsigned int sysctl_sched_latency;
 
 /* === C1: PEAK HEADROOM RESCUE === */
 /* Rescue saat freq starvation: load tinggi tapi freq rendah */
-#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     78
-#define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      80
-#define RFX_PEAK_RESCUE_STARVE_STREAK       2
+#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     88
+#define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      85
+#define RFX_PEAK_RESCUE_STARVE_STREAK       3
 #define RFX_PEAK_RESCUE_HOLD_NS             (50ULL * NSEC_PER_MSEC)
 #define RFX_PEAK_RESCUE_JUMP_PCT            98
 #define RFX_PEAK_RESCUE_STREAK_MAX          16
@@ -75,8 +75,8 @@ extern unsigned int sysctl_sched_latency;
 /* === C4: WAKEUP BOOST === */
 /* Bypass up_rate_limit saat transisi idle→busy */
 #define RFX_WAKEUP_IDLE_THRESH_PCT           8
-#define RFX_WAKEUP_BUSY_THRESH_PCT          25
-#define RFX_WAKEUP_BOOST_TICKS               3
+#define RFX_WAKEUP_BUSY_THRESH_PCT          38
+#define RFX_WAKEUP_BOOST_TICKS               2
 
 /* === UPDATED UI TRANSITION BOOST TIMER === */
 #define RFX_UI_TRANSITION_BOOST_NS          (2500ULL * NSEC_PER_MSEC)
@@ -102,8 +102,8 @@ extern unsigned int sysctl_sched_latency;
 #define CPUFREQ_VORPAL_LITTLE_DOWN_RATE_LIMIT_US  4000
 
 /* Per-state LITTLE down delays - EXPERT IDLE TUNING */
-#define RFX_LITTLE_DOWN_HEAVY_US    30000
-#define RFX_LITTLE_DOWN_MEDIUM_US    6000
+#define RFX_LITTLE_DOWN_HEAVY_US    20000
+#define RFX_LITTLE_DOWN_MEDIUM_US    4000
 #define RFX_LITTLE_DOWN_LIGHT_US       50
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
@@ -131,8 +131,8 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (450ULL * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD                   8
+#define RFX_BURST_GUARD_NS    (250ULL * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD                  12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
@@ -147,9 +147,9 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (60000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              85
-#define RFX_BIG_GAMING_MAX_PCT          95
-#define RFX_PRIME_GAMING_FLOOR_PCT      88
+#define RFX_GAMING_MAX_PCT             100
+#define RFX_BIG_GAMING_MAX_PCT         100
+#define RFX_PRIME_GAMING_FLOOR_PCT      82
 #define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
@@ -181,12 +181,12 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (30000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (24000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (200ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS            (20000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (16000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (300ULL * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     	92
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    94
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  88
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  85
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000ULL * NSEC_PER_MSEC)
@@ -197,8 +197,8 @@ extern unsigned int sysctl_sched_latency;
 
 #define RFX_LITTLE_CAP_THRESHOLD     614
 #define RFX_PRIME_CAP_THRESHOLD      1000
-#define RFX_PRIME_IDLE_CAP_PCT       35
-#define RFX_PRIME_LOW_LOAD_THRESHOLD 28
+#define RFX_PRIME_IDLE_CAP_PCT       50
+#define RFX_PRIME_LOW_LOAD_THRESHOLD 20
 #define RFX_BIG_DROP_PCT             13
 
 /* === ACTIVITY STATE MACHINE - FAST IDLE === */
@@ -1276,21 +1276,25 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
             			freq = hard_floor;
         			if (freq > gaming_cap)
             			freq = gaming_cap;
-    		} else {
-                unsigned int soft_cap = rfx_adaptive_max(policy, RFX_GAMING_MAX_PCT);
-                unsigned int hard_floor = rfx_adaptive_floor(policy,
-                    RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
-                if (rfx_pol->thermal_throttle_active) {
-                    soft_cap = rfx_adaptive_max(policy,
-                        RFX_THERMAL_THROTTLE_CAP_PCT);
-                }
-                if (soft_cap < hard_floor)
-                    soft_cap = hard_floor;
-                if (freq > soft_cap)
-                    freq = soft_cap;
-                if (freq < hard_floor && rfx_pol->in_heavy_mode)
-                    freq = hard_floor;
-            }
+    	} else {
+    unsigned int soft_cap;
+    unsigned int hard_floor = rfx_adaptive_floor(policy,
+        RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT);
+
+    if (rfx_pol->thermal_throttle_active) {
+        soft_cap = rfx_adaptive_max(policy, RFX_THERMAL_THROTTLE_CAP_PCT);
+    	} else if (rfx_pol->in_heavy_mode) {
+        		soft_cap = policy->cpuinfo.max_freq;
+    	} else {
+        		soft_cap = rfx_adaptive_max(policy, 95);
+   			 }
+    			if (soft_cap < hard_floor)
+        			soft_cap = hard_floor;
+    			if (freq > soft_cap)
+        			freq = soft_cap;
+    			if (freq < hard_floor && rfx_pol->in_heavy_mode)
+        			freq = hard_floor;
+			}
         } else if (!is_little) {
             if (rfx_pol->tunables->gaming_mode) {
                 if (freq > policy->max)
@@ -1301,14 +1305,18 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
                     if (freq < big_floor)
                         freq = big_floor;
                 }
-            } else {
-                unsigned int big_cap = rfx_adaptive_max(policy,
-                    rfx_pol->thermal_throttle_active
-                    ? RFX_THERMAL_THROTTLE_CAP_PCT
-                    : RFX_BIG_GAMING_MAX_PCT);
-                if (freq > big_cap)
-                    freq = big_cap;
-            }
+} else {
+    unsigned int big_cap;
+    if (rfx_pol->thermal_throttle_active) {
+        	big_cap = rfx_adaptive_max(policy, RFX_THERMAL_THROTTLE_CAP_PCT);
+    	} else if (rfx_pol->in_heavy_mode) {
+        	big_cap = policy->cpuinfo.max_freq;
+    	} else {
+        	big_cap = rfx_adaptive_max(policy, RFX_BIG_GAMING_MAX_PCT);
+    	}
+    		if (freq > big_cap)
+        		freq = big_cap;
+			}
         }
     }
 
