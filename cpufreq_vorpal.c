@@ -108,7 +108,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   4000
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   25000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
@@ -136,20 +136,20 @@ extern unsigned int sysctl_sched_latency;
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   28
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   22
 #define RFX_SUSTAIN_HEAVY_EXIT_PCT    10
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
 #define RFX_SUSTAIN_EXIT_TICKS         5
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (12000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (20000ULL * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (60000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT             100
 #define RFX_BIG_GAMING_MAX_PCT         100
-#define RFX_PRIME_GAMING_FLOOR_PCT      82
+#define RFX_PRIME_GAMING_FLOOR_PCT      88
 #define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
@@ -1131,7 +1131,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
             effective_delay = 6000 * NSEC_PER_USEC;
 	} else {
     		effective_delay = rfx_pol->tunables->gaming_mode
-        		? (50000 * NSEC_PER_USEC)   /* gaming: 50ms — was 22ms */
+        		? (150000 * NSEC_PER_USEC)   /* gaming: 50ms — was 22ms */
         		: (22000 * NSEC_PER_USEC);
 		}
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
@@ -1176,7 +1176,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
         		effective_down_delay = 6000 * NSEC_PER_USEC;
     		else
         		effective_down_delay = rfx_pol->tunables->gaming_mode
-    				? (150000 * NSEC_PER_USEC)   /* gaming: 80ms — was 35ms */
+    				? (150000 * NSEC_PER_USEC)   /* gaming: 150ms */
     				: (35000 * NSEC_PER_USEC);
 		}
 
@@ -1436,8 +1436,8 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         unsigned int peak_thresh = rfx_adaptive_max(policy, 90);
         if (rfx_pol->peak_hyst_prev_freq >= peak_thresh &&
             freq < rfx_pol->peak_hyst_prev_freq) {
-            if (rfx_pol->peak_hyst_streak < 3) {
-                unsigned int soft_floor = rfx_pol->peak_hyst_prev_freq * 94 / 100;
+            if (rfx_pol->peak_hyst_streak < 6) {
+                unsigned int soft_floor = rfx_pol->peak_hyst_prev_freq * 96 / 100;
                 if (freq < soft_floor) {
                     freq = soft_floor;
                     rfx_pol->peak_hyst_streak++;
