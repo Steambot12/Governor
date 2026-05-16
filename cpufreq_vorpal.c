@@ -53,8 +53,8 @@ extern unsigned int sysctl_sched_latency;
 
 /* === C1: PEAK HEADROOM RESCUE === */
 /* Rescue saat freq starvation: load tinggi tapi freq rendah */
-#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     75
-#define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      75
+#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     70
+#define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      72
 #define RFX_PEAK_RESCUE_STARVE_STREAK       1
 #define RFX_PEAK_RESCUE_HOLD_NS             (120ULL * NSEC_PER_MSEC)
 #define RFX_PEAK_RESCUE_JUMP_PCT            97
@@ -88,7 +88,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    22000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    45000
 
 /* Default: Ultra-fast 10us for instant response */
 #define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        10
@@ -137,13 +137,13 @@ extern unsigned int sysctl_sched_latency;
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
 #define RFX_SUSTAIN_HEAVY_ENTER_PCT   22
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    10
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT     8
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS         5
+#define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (35000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (40000ULL * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (45000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
@@ -197,7 +197,7 @@ extern unsigned int sysctl_sched_latency;
 
 #define RFX_LITTLE_CAP_THRESHOLD     614
 #define RFX_PRIME_CAP_THRESHOLD      1000
-#define RFX_PRIME_IDLE_CAP_PCT       50
+#define RFX_PRIME_IDLE_CAP_PCT       55
 #define RFX_PRIME_LOW_LOAD_THRESHOLD 20
 #define RFX_BIG_DROP_PCT             13
 
@@ -441,14 +441,18 @@ static void rfx_update_frame_pacing(struct rfx_cpu *rfx_c,
 	u64 interval;
 	u8 i, consistent = 0;
 	u8 cur, prev;
+	bool is_prime_or_big;
 
 	if (!rfx_pol->tunables->gaming_mode ||
 	    !rfx_pol->tunables->frame_pacing_boost)
 		return;
 
-	if (!rfx_pol->policy ||
-	    !rfx_is_prime(cpumask_first(rfx_pol->policy->cpus)))
-		return;
+	is_prime_or_big = rfx_is_prime(cpumask_first(rfx_pol->policy->cpus)) ||
+    	(!rfx_is_little(cpumask_first(rfx_pol->policy->cpus)) &&
+     	!rfx_is_prime(cpumask_first(rfx_pol->policy->cpus)));
+
+	if (!is_prime_or_big)
+    	return;
 
 	util_pct = max_cap ? (unsigned int)(effective_util * 100 / max_cap) : 0;
 
@@ -483,10 +487,14 @@ static void rfx_update_frame_pacing(struct rfx_cpu *rfx_c,
 
 	if (consistent >= RFX_FRAME_PACING_MIN_SCORE) {
 		/* 120fps pattern confirmed: extend gaming lock proactively */
+		u64 lock_dur;
 		rfx_c->frame_120fps_detected = true;
 		rfx_c->frame_pacing_score    = consistent;
-		rfx_pol->gaming_lock_end_ns  = time + RFX_FRAME_PACING_BOOST_NS;
-		rfx_pol->in_heavy_mode       = true;
+		lock_dur = rfx_is_prime(cpumask_first(rfx_pol->policy->cpus))
+        		? RFX_FRAME_PACING_BOOST_NS
+        		: (RFX_FRAME_PACING_BOOST_NS / 2);
+    	rfx_pol->gaming_lock_end_ns = time + lock_dur;
+    	rfx_pol->in_heavy_mode      = true;
 	} else if (consistent < 2) {
 		/* Inconsistent pattern: reset detector */
 		rfx_c->frame_120fps_detected = false;
@@ -504,8 +512,10 @@ static unsigned int rfx_get_em_knee_freq(struct cpufreq_policy *policy)
 {
 #ifdef CONFIG_ENERGY_MODEL
     struct em_perf_domain *pd;
-    unsigned int i, knee_freq = 0;
+    unsigned int i;
+    unsigned long cost_val;
     unsigned long min_cost = ULONG_MAX;
+    unsigned int knee_freq = 0;
 
     if (!policy || cpumask_empty(policy->cpus))
         return 0;
@@ -516,8 +526,6 @@ static unsigned int rfx_get_em_knee_freq(struct cpufreq_policy *policy)
 
     for (i = 0; i < pd->nr_perf_states; i++) {
         struct em_perf_state *ps = &pd->table[i];
-        /* Gunakan field yang pasti ada di GKI 5.10 */
-        unsigned long cost_val;
 
 #if defined(EM_PERF_STATE_HAS_COST)
         cost_val = ps->cost;
@@ -679,6 +687,15 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
     			rfx_pol->prime_gaming_floor_active = true;
     		/* Expire setelah 3 detik tanpa sustain baru */
     			rfx_pol->prime_gaming_floor_end_ns = time + (3000ULL * NSEC_PER_MSEC);
+			}
+
+			if (cap > (unsigned long)RFX_LITTLE_CAP_THRESHOLD &&
+			    cap < (unsigned long)RFX_PRIME_CAP_THRESHOLD &&
+			    util_pct >= 25 &&
+			    !rfx_pol->render_urgency_active) {
+				rfx_pol->render_urgency_active = true;
+				rfx_pol->render_boost_end_ns   =
+					time + (2000ULL * NSEC_PER_MSEC);
 			}
 		}
 		return;
@@ -1133,7 +1150,7 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
     		effective_delay = rfx_pol->tunables->gaming_mode
         		? (rfx_pol->render_urgency_active
         		? (450000 * NSEC_PER_USEC)   /* render aktif: 450ms */
-        		: (250000 * NSEC_PER_USEC))  /* gaming normal: 250ms */
+        		: (380000 * NSEC_PER_USEC))  /* gaming normal: 380ms */
     			: (22000 * NSEC_PER_USEC);
 		}
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
@@ -1180,7 +1197,7 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
         		effective_down_delay = rfx_pol->tunables->gaming_mode
     				? (rfx_pol->render_urgency_active
         			? (450000 * NSEC_PER_USEC)   /* render aktif: 450ms */
-        			: (250000 * NSEC_PER_USEC))  /* gaming normal: 250ms */
+        			: (380000 * NSEC_PER_USEC))  /* gaming normal: 380ms */
     				: (35000 * NSEC_PER_USEC);
 		}
 
@@ -1996,8 +2013,8 @@ if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate ||
 		: wuwa_boss 		? (18000ULL * NSEC_PER_MSEC)
         : wuwa_multienemy   ? (7000ULL  * NSEC_PER_MSEC)
         : wuwa_respawn      ? (10000ULL * NSEC_PER_MSEC)
-        : wuwa_combat 		? (10000ULL * NSEC_PER_MSEC)
-        : wuwa_city 		? (15000ULL * NSEC_PER_MSEC)
+        : wuwa_combat 		? (12000ULL * NSEC_PER_MSEC)
+        : wuwa_city 		? (12000ULL * NSEC_PER_MSEC)
         : wuwa_escalate     ? (4000ULL  * NSEC_PER_MSEC)
         : (sudden_spike || wuwa_anim) ? (3500ULL * NSEC_PER_MSEC)
         : (2000ULL          * NSEC_PER_MSEC));
@@ -2732,9 +2749,9 @@ static u8 rfx_detect_rom_tweak(void)
 static int rfx_init(struct cpufreq_policy *policy)
 {
 	struct rfx_policy   *rfx_pol;
-	struct rfx_tunables *tunables;
-	unsigned long        max_cap;
-	int ret = 0;
+    struct rfx_tunables *tunables;
+    unsigned long        max_cap;
+    int                  ret = 0;
 
 	if (policy->governor_data)
 		return -EBUSY;
