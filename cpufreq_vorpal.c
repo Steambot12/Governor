@@ -41,10 +41,10 @@ extern unsigned int sysctl_sched_latency;
 /* === A: FRAME PACING AWARE BOOST === */
 /* Target 120fps = 8.333ms per frame */
 #define RFX_FRAME_INTERVAL_120FPS_NS    (8333ULL * NSEC_PER_USEC)
-#define RFX_FRAME_PACING_WINDOW         6
-#define RFX_FRAME_PACING_JITTER_NS      (2500ULL * NSEC_PER_USEC)
-#define RFX_FRAME_PACING_BOOST_NS       (4000ULL * NSEC_PER_MSEC)
-#define RFX_FRAME_PACING_MIN_SCORE      4
+#define RFX_FRAME_PACING_WINDOW         7
+#define RFX_FRAME_PACING_JITTER_NS      (1800ULL * NSEC_PER_USEC)
+#define RFX_FRAME_PACING_BOOST_NS       (6000ULL * NSEC_PER_MSEC)
+#define RFX_FRAME_PACING_MIN_SCORE      3
 
 /* === B: EAS / ENERGY MODEL FLOOR === */
 /* Floor di energy-knee OPP untuk efisiensi optimal */
@@ -53,10 +53,10 @@ extern unsigned int sysctl_sched_latency;
 
 /* === C1: PEAK HEADROOM RESCUE === */
 /* Rescue saat freq starvation: load tinggi tapi freq rendah */
-#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     88
-#define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      85
-#define RFX_PEAK_RESCUE_STARVE_STREAK       3
-#define RFX_PEAK_RESCUE_HOLD_NS             (50ULL * NSEC_PER_MSEC)
+#define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     80
+#define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      80
+#define RFX_PEAK_RESCUE_STARVE_STREAK       2
+#define RFX_PEAK_RESCUE_HOLD_NS             (80ULL * NSEC_PER_MSEC)
 #define RFX_PEAK_RESCUE_JUMP_PCT            98
 #define RFX_PEAK_RESCUE_STREAK_MAX          16
 
@@ -80,7 +80,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* === UPDATED UI TRANSITION BOOST TIMER === */
 #define RFX_UI_TRANSITION_BOOST_NS          (4500ULL * NSEC_PER_MSEC)
-#define RFX_UI_TRANSITION_FLOOR_PCT          86
+#define RFX_UI_TRANSITION_FLOOR_PCT          88
 
 /* === RATE LIMITS === */
 #define RFX_LITTLE_INTERACTIVE_FLOOR_KHZ  768000
@@ -88,7 +88,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    8000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    16000
 
 /* Default: Ultra-fast 10us for instant response */
 #define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        10
@@ -108,7 +108,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   25000
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   45000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
@@ -118,7 +118,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* Hispeed: Thermal vs Performance Balance - TUNED */
 #define CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT   72
-#define RFX_HISPEED_GAMING_PCT                     85
+#define RFX_HISPEED_GAMING_PCT                     90
 #define RFX_HISPEED_DAILY_PCT                      55
 #define RFX_HISPEED_VIDEO_PCT                      72
 
@@ -131,8 +131,8 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS    (250ULL * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD                  12
+#define RFX_BURST_GUARD_NS    (350ULL * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD                  10
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
@@ -143,20 +143,13 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_SUSTAIN_EXIT_TICKS         5
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (20000ULL * NSEC_PER_MSEC)
-#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (25000ULL * NSEC_PER_MSEC)
-
-/* === WUWA SPECIFIC DEFINES === */
-#define RFX_WUWA_CITY_LOCK_NS           (8000ULL  * NSEC_PER_MSEC)
-#define RFX_WUWA_RESPAWN_LOCK_NS        (6000ULL  * NSEC_PER_MSEC)
-#define RFX_WUWA_COMBAT_LOCK_NS         (5000ULL  * NSEC_PER_MSEC)
-#define RFX_WUWA_LAHAI_FLOOR_PCT        88
-#define RFX_WUWA_RESPAWN_BOOST_NS       (4500ULL  * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (25000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (45000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT             100
 #define RFX_BIG_GAMING_MAX_PCT         100
-#define RFX_PRIME_GAMING_FLOOR_PCT      88
+#define RFX_PRIME_GAMING_FLOOR_PCT      91
 #define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       85
 
@@ -188,12 +181,12 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
 
-#define RFX_THERMAL_WINDOW_NS            (20000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (16000ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (300ULL * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT     	92
+#define RFX_THERMAL_WINDOW_NS            (30000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (24000ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (200ULL * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT     	94
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    94
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  85
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  88
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000ULL * NSEC_PER_MSEC)
@@ -1010,18 +1003,11 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 		}
 		return;
 	}
-if (rfx_pol->tunables->gaming_mode) {
-    /* Bypass thermal throttle saat WuWa render/respawn aktif */
-    if (rfx_pol->render_urgency_active &&
-        rfx_pol->render_boost_end_ns &&
-        time < rfx_pol->render_boost_end_ns) {
-        rfx_pol->thermal_throttle_active = false;
-        return;  /* Tidak throttle saat CPU sedang render musuh/kota */
-    }
 
-    if (rfx_pol->thermal_sustain_window_count > 2)
+	if (rfx_pol->tunables->gaming_mode &&
+        rfx_pol->thermal_sustain_window_count > 2) {
         rfx_pol->thermal_sustain_window_count = 2;
-}
+    }
 
 	effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
 		? RFX_THERMAL_WINDOW_SHRINK_NS
@@ -1031,7 +1017,7 @@ if (rfx_pol->tunables->gaming_mode) {
 
 	/* Gaming mode: window jauh lebih panjang — throttle sangat jarang */
 	if (rfx_pol->tunables->gaming_mode)
-		effective_window = effective_window * 3;  /* was +50%, sekarang 3x */
+		effective_window = effective_window * 4;
 
 	if (window_elapsed >= effective_window) {
 		rfx_pol->thermal_throttle_active = true;
@@ -1145,10 +1131,10 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
             effective_delay = 6000 * NSEC_PER_USEC;
 	} else {
     		effective_delay = rfx_pol->tunables->gaming_mode
-			? (rfx_pol->render_urgency_active
-       		? (250000 * NSEC_PER_USEC)  /* Saat render musuh/kota: tahan 250ms */
-       		: (150000 * NSEC_PER_USEC)) /* Gaming normal: tetap 150ms */
-    		: (22000 * NSEC_PER_USEC);
+        		? (rfx_pol->render_urgency_active
+        		? (450000 * NSEC_PER_USEC)   /* render aktif: 450ms */
+        		: (250000 * NSEC_PER_USEC))  /* gaming normal: 250ms */
+    			: (22000 * NSEC_PER_USEC);
 		}
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
         effective_delay = 25 * NSEC_PER_USEC;
@@ -1192,10 +1178,10 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
         		effective_down_delay = 6000 * NSEC_PER_USEC;
     		else
         		effective_down_delay = rfx_pol->tunables->gaming_mode
-    			? (rfx_pol->render_urgency_active
-       			? (250000 * NSEC_PER_USEC)  /* Render aktif: hold 250ms agar tidak drop */
-       			: (150000 * NSEC_PER_USEC))
-    			: (35000 * NSEC_PER_USEC);
+    				? (rfx_pol->render_urgency_active
+        			? (450000 * NSEC_PER_USEC)   /* render aktif: 450ms */
+        			: (250000 * NSEC_PER_USEC))  /* gaming normal: 250ms */
+    				: (35000 * NSEC_PER_USEC);
 		}
 
         if (effective_down_delay > 0 &&
@@ -1360,22 +1346,16 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	}
 
 		/* v1.1: UI Transition Floor — gated pada render_urgency_active */
-// SESUDAH:
-if (rfx_pol->render_urgency_active &&
-    rfx_pol->render_boost_end_ns &&
-    time < rfx_pol->render_boost_end_ns) {
-    if (is_prime) {
-        /* Jika render boost window panjang (>3s sisa), ini adalah Lahai Roi/respawn */
-        u64 remaining = rfx_pol->render_boost_end_ns - time;
-        unsigned int render_floor = (remaining > (3000ULL * NSEC_PER_MSEC))
-            ? RFX_WUWA_LAHAI_FLOOR_PCT          /* 88% — berat */
-            : RFX_UI_TRANSITION_FLOOR_PCT;      /* 86% — normal */
-        if (freq < rfx_adaptive_floor(policy, render_floor))
-            freq = rfx_adaptive_floor(policy, render_floor);
-    } else if (!is_little && !is_prime &&
-               freq < rfx_adaptive_floor(policy, 80))   /* BIG: naik dari 78→80 */
-        freq = rfx_adaptive_floor(policy, 80);
-}
+	if (rfx_pol->render_urgency_active &&
+	    rfx_pol->render_boost_end_ns &&
+	    time < rfx_pol->render_boost_end_ns) {
+		if (is_prime &&
+		    freq < rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT))
+			freq = rfx_adaptive_floor(policy, RFX_UI_TRANSITION_FLOOR_PCT);
+		else if (!is_little && !is_prime &&
+			 freq < rfx_adaptive_floor(policy, 78))
+			freq = rfx_adaptive_floor(policy, 78);
+	}
 
 	if (rfx_pol->in_heavy_mode &&
 	    rfx_pol->current_mode != RFX_MODE_GAMING &&
@@ -1996,43 +1976,37 @@ if (rfx_pol->tunables->gaming_mode) {
     unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
     unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
     unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-    unsigned int h4 = rfx_c->util_history[(h - 4) & 7];
+	unsigned int h4 = rfx_c->util_history[(h - 4) & 7];
+	bool sudden_spike    = (h1 > 18) && (h1 > h2 + 8);
+	bool wuwa_anim       = (h1 > 22) && (h3 > 18) && (h2 < 22);
+	bool wuwa_escalate   = (h1 > 32) && (h2 > 12) && (h1 > h2 + 14);
+	bool sustained_heavy = (h1 >= 24) && (h2 >= 22) && (h3 >= 18);
+	bool rising          = h1 > h2 && h2 > h3 && h1 > 10;
+	bool wuwa_city       = (h1 >= 14) && (h2 >= 12) && (h3 >= 10) && (h1 < 38);
+	bool wuwa_combat     = (h1 >= 20) && (h2 >= 18) && (h3 >= 15) && (h1 < 40);
+	bool wuwa_multienemy = (h1 >= 28) && (h2 >= 22) && (h3 >= 18);
+	bool wuwa_respawn    = (h1 >= 16) && (h4 < 12) && (h1 > h4 + 10);
+	bool lahai_roi       = (h1 >= 15) && (h2 >= 13) && (h3 >= 12) && (h4 >= 10);
 
-    /* Existing patterns — threshold diturunkan agar lebih sensitif */
-    bool sudden_spike    = (h1 > 18) && (h1 > h2 + 8);
-    bool wuwa_anim       = (h1 > 22) && (h3 > 18) && (h2 < 22);
-    bool wuwa_escalate   = (h1 > 28) && (h2 > 12) && (h1 > h2 + 14);  /* turun dari 40→28 */
-    bool sustained_heavy = (h1 >= 24) && (h2 >= 22) && (h3 >= 18);     /* turun dari 28/25/20 */
-    bool rising          = h1 > h2 && h2 > h3 && h1 > 12;
-
-    /* === BARU: WuWa city & respawn patterns === */
-    bool wuwa_city       = (h1 >= 16) && (h2 >= 14) && (h3 >= 12) && (h1 < 35);  /* Lahai Roi */
-    bool wuwa_combat     = (h1 >= 20) && (h2 >= 18) && (h3 >= 15) && (h1 < 40);  /* Combat multi-enemy */
-    bool wuwa_multienemy = (h1 >= 28) && (h2 >= 22) && (h3 >= 18);               /* Boss/multi render */
-    bool wuwa_respawn    = (h1 >= 20) && (h4 < 10) && (h1 > h4 + 12);            /* Respawn: spike dari idle */
-    bool lahai_roi       = (h1 >= 18) && (h2 >= 16) && (h3 >= 14) && (h4 >= 12); /* 4-tick sustained city */
-
-    if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate ||
-        wuwa_city || wuwa_combat || wuwa_multienemy || wuwa_respawn || lahai_roi) {
-        rfx_pol->in_heavy_mode      = true;
-        rfx_pol->gaming_lock_end_ns = time +
-            (lahai_roi          ? (10000ULL * NSEC_PER_MSEC)   /* Kota paling berat: 10s */
-            : wuwa_multienemy   ? (7000ULL  * NSEC_PER_MSEC)
-            : wuwa_respawn      ? RFX_WUWA_RESPAWN_LOCK_NS     /* 6s */
-            : wuwa_combat       ? RFX_WUWA_COMBAT_LOCK_NS      /* 5s */
-            : wuwa_city         ? RFX_WUWA_CITY_LOCK_NS        /* 8s */
-            : wuwa_escalate     ? (4000ULL  * NSEC_PER_MSEC)
-            : (sudden_spike || wuwa_anim) ? (3500ULL * NSEC_PER_MSEC)
-            : (2000ULL          * NSEC_PER_MSEC));              /* rising: naik dari 1500→2000 */
-        rfx_pol->render_urgency_active = true;
-        rfx_pol->render_boost_end_ns = time +
-            (lahai_roi || wuwa_respawn || wuwa_multienemy
-                ? RFX_WUWA_RESPAWN_BOOST_NS                    /* 4500ms */
-            : (sudden_spike || wuwa_anim || wuwa_combat)
-                ? RFX_UI_TRANSITION_BOOST_NS                   /* 4500ms — sudah diubah */
-            : wuwa_city
-                ? (2500ULL * NSEC_PER_MSEC)
-            : (600ULL * NSEC_PER_MSEC));
+if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate ||
+    wuwa_city || wuwa_combat || wuwa_multienemy || wuwa_respawn || lahai_roi) {
+    rfx_pol->gaming_lock_end_ns = time +
+        (lahai_roi          ? (14000ULL * NSEC_PER_MSEC)
+        : wuwa_multienemy   ? (7000ULL  * NSEC_PER_MSEC)
+        : wuwa_respawn      ? (10000ULL * NSEC_PER_MSEC)
+        : wuwa_combat       ? (8000ULL  * NSEC_PER_MSEC)
+        : wuwa_city         ? (12000ULL * NSEC_PER_MSEC)
+        : wuwa_escalate     ? (4000ULL  * NSEC_PER_MSEC)
+        : (sudden_spike || wuwa_anim) ? (3500ULL * NSEC_PER_MSEC)
+        : (2000ULL          * NSEC_PER_MSEC));
+    rfx_pol->render_boost_end_ns = time +
+        (lahai_roi || wuwa_respawn || wuwa_multienemy
+            ? (7000ULL * NSEC_PER_MSEC)
+        : (sudden_spike || wuwa_anim || wuwa_combat)
+            ? RFX_UI_TRANSITION_BOOST_NS   /* 4500ms */
+        : wuwa_city
+            ? (3000ULL * NSEC_PER_MSEC)
+        : (800ULL * NSEC_PER_MSEC));
         /* Re-trigger game_launch jika sudah expired */
         if (!rfx_pol->game_launching &&
             (!rfx_pol->game_launch_end_ns ||
