@@ -43,7 +43,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_FRAME_INTERVAL_120FPS_NS    (8333ULL * NSEC_PER_USEC)
 #define RFX_FRAME_PACING_WINDOW         5
 #define RFX_FRAME_PACING_JITTER_NS      (2500ULL * NSEC_PER_USEC)
-#define RFX_FRAME_PACING_BOOST_NS       (20000ULL * NSEC_PER_MSEC)
+#define RFX_FRAME_PACING_BOOST_NS       (4000ULL * NSEC_PER_MSEC)
 #define RFX_FRAME_PACING_MIN_SCORE      3
 
 /* === B: EAS / ENERGY MODEL FLOOR === */
@@ -55,9 +55,9 @@ extern unsigned int sysctl_sched_latency;
 /* Rescue saat freq starvation: load tinggi tapi freq rendah */
 #define RFX_PEAK_RESCUE_STARVE_LOAD_PCT     70
 #define RFX_PEAK_RESCUE_FREQ_FLOOR_PCT      72
-#define RFX_PEAK_RESCUE_STARVE_STREAK       1
+#define RFX_PEAK_RESCUE_STARVE_STREAK       3
 #define RFX_PEAK_RESCUE_HOLD_NS             (120ULL * NSEC_PER_MSEC)
-#define RFX_PEAK_RESCUE_JUMP_PCT            97
+#define RFX_PEAK_RESCUE_JUMP_PCT            95
 #define RFX_PEAK_RESCUE_STREAK_MAX          16
 
 /* === C2: CLUSTER WAKE PULSE === */
@@ -143,13 +143,13 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (40000ULL * NSEC_PER_MSEC)
-#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (45000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (80000ULL * NSEC_PER_MSEC)
+#define RFX_GAMING_TUNABLE_SUSTAIN_NS  (10000ULL * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
 #define RFX_GAMING_MAX_PCT             100
 #define RFX_BIG_GAMING_MAX_PCT         100
-#define RFX_PRIME_GAMING_FLOOR_PCT      91
+#define RFX_PRIME_GAMING_FLOOR_PCT      82
 #define RFX_GAME_LAUNCH_FLOOR_PCT       75
 #define RFX_LITTLE_GAMING_CAP_PCT       88
 
@@ -186,7 +186,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_THERMAL_THROTTLE_BURST_NS    (200ULL * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     	96
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT    94
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  88
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  80
 
 /* Extended interactive - shorter */
 #define RFX_INTERACTIVE_DURATION_NS  (3000ULL * NSEC_PER_MSEC)
@@ -660,11 +660,12 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		rfx_pol->force_idle         = false;
 		rfx_pol->sustain_exit_ticks = 0;
 
-		if (util_pct >= 1) {
-			rfx_pol->in_heavy_mode         = true;
-			rfx_pol->gaming_lock_end_ns    = time + RFX_GAMING_TUNABLE_SUSTAIN_NS;
-			rfx_pol->render_urgency_active = true;
-			rfx_pol->render_boost_end_ns   = time + RFX_UI_TRANSITION_BOOST_NS;
+	if (util_pct >= 10) {
+            rfx_pol->in_heavy_mode         = true;
+            rfx_pol->gaming_lock_end_ns    = time + RFX_GAMING_TUNABLE_SUSTAIN_NS;
+            rfx_pol->render_urgency_active = (util_pct >= 20);
+            rfx_pol->render_boost_end_ns   = rfx_pol->render_urgency_active
+                ? (time + RFX_UI_TRANSITION_BOOST_NS) : 0;
 		} else if (rfx_pol->gaming_lock_end_ns &&
 			   time < rfx_pol->gaming_lock_end_ns) {
 			rfx_pol->in_heavy_mode      = true;
@@ -1005,7 +1006,7 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 	time_since_gaming = time - rfx_pol->mode_switch_time_ns;
 
 	/* Grace period lebih panjang — 5 detik awal gaming bebas throttle */
-	if (time_since_gaming < (5000ULL * NSEC_PER_MSEC)) {  /* was 3000ms */
+	if (time_since_gaming < (2000ULL * NSEC_PER_MSEC)) {  /* was 3000ms */
 		rfx_pol->thermal_throttle_active = false;
 		return;
 	}
@@ -1022,8 +1023,8 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 	}
 
 	if (rfx_pol->tunables->gaming_mode &&
-        rfx_pol->thermal_sustain_window_count > 2) {
-        rfx_pol->thermal_sustain_window_count = 2;
+        rfx_pol->thermal_sustain_window_count > 1) {
+        rfx_pol->thermal_sustain_window_count = 1;
     }
 
 	effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
@@ -1149,8 +1150,8 @@ static bool rfx_should_update_freq(struct rfx_policy *rfx_pol, u64 time)
 	} else {
     		effective_delay = rfx_pol->tunables->gaming_mode
         		? (rfx_pol->render_urgency_active
-        		? (450000 * NSEC_PER_USEC)   /* render aktif: 450ms */
-        		: (380000 * NSEC_PER_USEC))  /* gaming normal: 380ms */
+        		? (180000 * NSEC_PER_USEC)
+        		: (120000 * NSEC_PER_USEC))
     			: (22000 * NSEC_PER_USEC);
 		}
     } else if (rfx_pol->current_mode == RFX_MODE_VIDEO) {
@@ -1196,8 +1197,8 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
     		else
         		effective_down_delay = rfx_pol->tunables->gaming_mode
     				? (rfx_pol->render_urgency_active
-        			? (450000 * NSEC_PER_USEC)   /* render aktif: 450ms */
-        			: (380000 * NSEC_PER_USEC))  /* gaming normal: 380ms */
+        			? (180000 * NSEC_PER_USEC)   /* render aktif: 450ms */
+        			: (120000 * NSEC_PER_USEC))  /* gaming normal: 380ms */
     				: (35000 * NSEC_PER_USEC);
 		}
 
@@ -1994,30 +1995,30 @@ if (rfx_pol->tunables->gaming_mode) {
     unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
     unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
 	unsigned int h4 = rfx_c->util_history[(h - 4) & 7];
-	bool sudden_spike    = (h1 > 16) && (h1 > h2 + 6);
-	bool wuwa_anim       = (h1 > 18) && (h3 > 14) && (h2 < 20);
-	bool wuwa_escalate   = (h1 > 28) && (h2 > 10) && (h1 > h2 + 12);
-	bool sustained_heavy = (h1 >= 22) && (h2 >= 20) && (h3 >= 16);
-	bool rising          = h1 > h2 && h2 > h3 && h1 > 10;
-	bool wuwa_city       = (h1 >= 8)  && (h2 >= 6)  && (h3 >= 5)  && (h1 < 38);
-	bool wuwa_combat     = (h1 >= 12) && (h2 >= 10) && (h3 >= 8)  && (h1 < 40);
-	bool wuwa_multienemy = (h1 >= 24) && (h2 >= 18) && (h3 >= 16);
-	bool wuwa_respawn    = (h1 >= 14) && (h4 < 10) && (h1 > h4 + 8);
-	bool wuwa_boss		 = (h1 >= 26) && (h2 >= 20) && (h3 >= 18) && (h4 >= 14);
-	bool lahai_roi       = (h1 >= 13) && (h2 >= 11) && (h3 >= 10) && (h4 >= 8);
+    bool sudden_spike    = (h1 > 28) && (h1 > h2 + 12);
+    bool wuwa_anim       = (h1 > 25) && (h3 > 18) && (h2 < 25);
+    bool wuwa_escalate   = (h1 > 35) && (h2 > 15) && (h1 > h2 + 15);
+    bool sustained_heavy = (h1 >= 30) && (h2 >= 28) && (h3 >= 22);
+    bool rising          = h1 > h2 && h2 > h3 && h1 > 18;
+    bool wuwa_city       = (h1 >= 18) && (h2 >= 14) && (h3 >= 12) && (h1 < 45);
+    bool wuwa_combat     = (h1 >= 22) && (h2 >= 18) && (h3 >= 15) && (h1 < 50);
+    bool wuwa_multienemy = (h1 >= 30) && (h2 >= 24) && (h3 >= 20);
+    bool wuwa_respawn    = (h1 >= 22) && (h4 < 12) && (h1 > h4 + 12);
+    bool wuwa_boss       = (h1 >= 32) && (h2 >= 26) && (h3 >= 22) && (h4 >= 18);
+    bool lahai_roi       = (h1 >= 20) && (h2 >= 17) && (h3 >= 15) && (h4 >= 12);
 
 if (rising || sudden_spike || sustained_heavy || wuwa_anim || wuwa_escalate ||
     wuwa_city || wuwa_combat || wuwa_multienemy || wuwa_respawn || wuwa_boss || lahai_roi) {
     rfx_pol->gaming_lock_end_ns = time +
-        (lahai_roi          ? (14000ULL * NSEC_PER_MSEC)
-		: wuwa_boss 		? (18000ULL * NSEC_PER_MSEC)
-        : wuwa_multienemy   ? (7000ULL  * NSEC_PER_MSEC)
-        : wuwa_respawn      ? (10000ULL * NSEC_PER_MSEC)
-        : wuwa_combat 		? (12000ULL * NSEC_PER_MSEC)
-        : wuwa_city 		? (12000ULL * NSEC_PER_MSEC)
-        : wuwa_escalate     ? (4000ULL  * NSEC_PER_MSEC)
-        : (sudden_spike || wuwa_anim) ? (3500ULL * NSEC_PER_MSEC)
-        : (2000ULL          * NSEC_PER_MSEC));
+        (lahai_roi          ? (6000ULL  * NSEC_PER_MSEC)
+        : wuwa_boss         ? (7000ULL  * NSEC_PER_MSEC)
+        : wuwa_multienemy   ? (5000ULL  * NSEC_PER_MSEC)
+        : wuwa_respawn      ? (5000ULL  * NSEC_PER_MSEC)
+        : wuwa_combat       ? (5000ULL  * NSEC_PER_MSEC)
+        : wuwa_city         ? (4000ULL  * NSEC_PER_MSEC)
+        : wuwa_escalate     ? (3000ULL  * NSEC_PER_MSEC)
+        : (sudden_spike || wuwa_anim) ? (2500ULL * NSEC_PER_MSEC)
+        : (1500ULL          * NSEC_PER_MSEC));
     rfx_pol->render_boost_end_ns = time +
         (lahai_roi || wuwa_respawn || wuwa_multienemy || wuwa_boss
             ? (9000ULL * NSEC_PER_MSEC)
@@ -2569,11 +2570,14 @@ ATTRIBUTE_GROUPS(rfx_little);
 
 static struct attribute *rfx_big_attrs[] = {
     &down_rate_limit_us.attr,
+    &up_rate_limit_us.attr,
     &hispeed_boost_pct.attr,
     &hispeed_filter_shift.attr,
+    &hispeed_window_us.attr,
     &rate_limit_us.attr,
     &gaming_mode.attr,
-    &frame_pacing_boost.attr,   /* v1.1: frame pacing */
+    &em_floor_pct.attr,
+    &frame_pacing_boost.attr,
     NULL
 };
 ATTRIBUTE_GROUPS(rfx_big);
@@ -2584,9 +2588,10 @@ static struct attribute *rfx_prime_attrs[] = {
     &hispeed_window_us.attr,
     &rate_limit_us.attr,
     &up_rate_limit_us.attr,
+    &down_rate_limit_us.attr,
     &gaming_mode.attr,
-    &em_floor_pct.attr,         /* v1.1: EAS floor */
-    &frame_pacing_boost.attr,   /* v1.1: frame pacing */
+    &em_floor_pct.attr,
+    &frame_pacing_boost.attr,
     NULL
 };
 ATTRIBUTE_GROUPS(rfx_prime);
