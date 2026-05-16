@@ -106,8 +106,8 @@ unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1200000ULL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1200000ULL;
+unsigned int sysctl_sched_wakeup_granularity			= 1500000ULL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1500000ULL;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
@@ -122,7 +122,7 @@ u8   __read_mostly sched_burst_smoothness_long  = 1;
 u8   __read_mostly sched_burst_smoothness_short = 1;
 u8   __read_mostly sched_burst_fork_atavistic   = 3;
 u8   __read_mostly sched_burst_penalty_offset   = 24;
-uint __read_mostly sched_burst_penalty_scale    = 800;
+uint __read_mostly sched_burst_penalty_scale    = 780;
 uint __read_mostly sched_burst_cache_lifetime   = 20000000;
 #endif // CONFIG_SCHED_BORE
 
