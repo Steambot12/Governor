@@ -43,7 +43,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_FRAME_INTERVAL_120FPS_NS    (8333ULL * NSEC_PER_USEC)
 #define RFX_FRAME_PACING_WINDOW         5
 #define RFX_FRAME_PACING_JITTER_NS      (2500ULL * NSEC_PER_USEC)
-#define RFX_FRAME_PACING_BOOST_NS       (8000ULL * NSEC_PER_MSEC)
+#define RFX_FRAME_PACING_BOOST_NS       (20000ULL * NSEC_PER_MSEC)
 #define RFX_FRAME_PACING_MIN_SCORE      3
 
 /* === B: EAS / ENERGY MODEL FLOOR === */
@@ -660,7 +660,7 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 		rfx_pol->force_idle         = false;
 		rfx_pol->sustain_exit_ticks = 0;
 
-		if (util_pct >= 3) {
+		if (util_pct >= 1) {
 			rfx_pol->in_heavy_mode         = true;
 			rfx_pol->gaming_lock_end_ns    = time + RFX_GAMING_TUNABLE_SUSTAIN_NS;
 			rfx_pol->render_urgency_active = true;
@@ -671,8 +671,8 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			rfx_pol->sustain_exit_ticks = 0;
 		} else {
 			u64 hyst_ns = (rfx_pol->tunables->cluster_type == RFX_CLUSTER_PRIME)
-				      ? (8000ULL * NSEC_PER_MSEC)
-				      : (8000ULL * NSEC_PER_MSEC);
+				      ? (15000ULL * NSEC_PER_MSEC)
+              		  : (10000ULL * NSEC_PER_MSEC);
 
 			if (!rfx_pol->gaming_lock_end_ns ||
 			    (time - rfx_pol->gaming_lock_end_ns) > hyst_ns)
@@ -1585,8 +1585,8 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 		u64 interactive_dur;
 	if (is_prime)
     	interactive_dur = rfx_pol->tunables->gaming_mode
-        ? (900ULL * NSEC_PER_MSEC)
-        : (400ULL * NSEC_PER_MSEC);
+        ? (1800ULL * NSEC_PER_MSEC)
+        : (600ULL * NSEC_PER_MSEC);
 	else if (is_big)
     	interactive_dur = 1500 * NSEC_PER_MSEC; // BIG: 1.5s
 	else
@@ -1999,8 +1999,8 @@ if (rfx_pol->tunables->gaming_mode) {
 	bool wuwa_escalate   = (h1 > 28) && (h2 > 10) && (h1 > h2 + 12);
 	bool sustained_heavy = (h1 >= 22) && (h2 >= 20) && (h3 >= 16);
 	bool rising          = h1 > h2 && h2 > h3 && h1 > 10;
-	bool wuwa_city       = (h1 >= 12) && (h2 >= 10) && (h3 >= 8) && (h1 < 38);
-	bool wuwa_combat     = (h1 >= 16) && (h2 >= 14) && (h3 >= 12) && (h1 < 40);
+	bool wuwa_city       = (h1 >= 8)  && (h2 >= 6)  && (h3 >= 5)  && (h1 < 38);
+	bool wuwa_combat     = (h1 >= 12) && (h2 >= 10) && (h3 >= 8)  && (h1 < 40);
 	bool wuwa_multienemy = (h1 >= 24) && (h2 >= 18) && (h3 >= 16);
 	bool wuwa_respawn    = (h1 >= 14) && (h4 < 10) && (h1 > h4 + 8);
 	bool wuwa_boss		 = (h1 >= 26) && (h2 >= 20) && (h3 >= 18) && (h4 >= 14);
