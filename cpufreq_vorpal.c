@@ -547,27 +547,44 @@ static unsigned int rfx_get_em_knee_freq(struct cpufreq_policy *policy)
 }
 
 static unsigned int rfx_apply_em_floor(struct rfx_policy *rfx_pol,
-                                        unsigned int freq, u64 time)
+                                        unsigned int freq)
 {
-    unsigned int floor_pct = rfx_pol->tunables->em_floor_pct;
+    struct rfx_tunables *tunables = rfx_pol->tunables;
     unsigned int em_floor;
-    struct cpufreq_policy *policy = rfx_pol->policy;
+    unsigned int effective_pct;
 
-    /* Guard semua kondisi invalid */
-	if (!floor_pct || !rfx_pol->em_knee_valid || !rfx_pol->em_knee_freq_khz)
-    	return freq;
-    if (!policy || !policy->cpuinfo.max_freq)  /* <-- TAMBAHKAN INI */
+    /* FIX: Auto sweetspot berdasarkan cluster type + gaming mode
+     * Jika em_floor_pct = 0 (default) dan gaming_mode aktif,
+     * gunakan sweetspot otomatis. User override tetap dihormati. */
+    if (!rfx_pol->em_knee_valid)
         return freq;
+
     if (rfx_pol->thermal_throttle_active)
         return freq;
 
-    em_floor = (unsigned int)((u64)rfx_pol->em_knee_freq_khz *
-                               floor_pct / 100);
-    em_floor = clamp(em_floor,
-                     policy->cpuinfo.min_freq,
-                     policy->cpuinfo.max_freq);  /* clamp bukan clamp_t */
+    if (tunables->em_floor_pct > 0) {
+        /* User-set override */
+        effective_pct = tunables->em_floor_pct;
+    } else if (tunables->gaming_mode) {
+        /* FIX: Auto sweetspot per cluster */
+        switch (tunables->cluster_type) {
+        case RFX_CLUSTER_PRIME:
+            effective_pct = 68;   /* PRIME: 68% dari energy-knee = responsif tapi tidak overheat */
+            break;
+        case RFX_CLUSTER_BIG:
+            effective_pct = 62;   /* BIG: 62% sweetspot efisiensi */
+            break;
+        case RFX_CLUSTER_LITTLE:
+        default:
+            effective_pct = 45;   /* LITTLE: 45% cukup untuk prevent idle drop */
+            break;
+        }
+    } else {
+        return freq;  /* daily use: tidak ada floor */
+    }
 
-    return (freq < em_floor) ? em_floor : freq;
+    em_floor = rfx_pol->em_knee_freq_khz * effective_pct / 100;
+    return max(freq, em_floor);
 }
 
 /* ============================================================
@@ -1006,10 +1023,11 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 	time_since_gaming = time - rfx_pol->mode_switch_time_ns;
 
 	/* Grace period lebih panjang — 5 detik awal gaming bebas throttle */
-	if (time_since_gaming < (2000ULL * NSEC_PER_MSEC)) {  /* was 3000ms */
-		rfx_pol->thermal_throttle_active = false;
-		return;
-	}
+	if (time_since_gaming < (3000ULL * NSEC_PER_MSEC)) {
+        rfx_pol->thermal_throttle_active    = false;
+        rfx_pol->thermal_sustain_window_count = 0;  /* FIX: wajib reset */
+        return;
+    }
 
 	if (rfx_pol->thermal_throttle_active) {
 		if (time >= rfx_pol->thermal_throttle_end_ns) {
@@ -1023,8 +1041,8 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 	}
 
 	if (rfx_pol->tunables->gaming_mode &&
-        rfx_pol->thermal_sustain_window_count > 1) {
-        rfx_pol->thermal_sustain_window_count = 1;
+        rfx_pol->thermal_sustain_window_count > 3) {
+        rfx_pol->thermal_sustain_window_count = 1;  /* FIX: reset ke 1 bukan 2 */
     }
 
 	effective_window = (rfx_pol->thermal_sustain_window_count >= 3)
@@ -1415,7 +1433,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     }
 
     /* === v1.1: EAS Energy Model Floor === */
-    freq = rfx_apply_em_floor(rfx_pol, freq, time);
+    freq = rfx_apply_em_floor(rfx_pol, freq);
 
     /* Interactive floor - LOWER for cooler idle */
 	if (!rfx_pol->in_heavy_mode &&
@@ -2471,6 +2489,7 @@ static ssize_t hispeed_boost_pct_store(struct gov_attr_set *attr_set,
 	t->hispeed_boost_pct = val;
 	return count;
 }
+
 static struct governor_attr hispeed_boost_pct =
 	__ATTR(hispeed_boost_pct, 0644, hispeed_boost_pct_show, hispeed_boost_pct_store);
 
@@ -2478,45 +2497,36 @@ static ssize_t gaming_mode_show(struct gov_attr_set *attr_set, char *buf)
 {
 	return sprintf(buf, "%u\n", to_rfx_tunables(attr_set)->gaming_mode);
 }
+
 static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
-				const char *buf, size_t count)
+                                  const char *buf, size_t count)
 {
-	struct rfx_tunables *t = to_rfx_tunables(attr_set);
-	struct rfx_policy *rfx_pol;
-	unsigned int val;
+    struct rfx_tunables *tunables = to_rfx_tunables(attr_set);
+    struct rfx_policy *rfx_pol;
+    unsigned int val;
 
-	if (kstrtouint(buf, 10, &val))
-		return -EINVAL;
-	if (val > 1)
-		return -EINVAL;
+    if (kstrtouint(buf, 10, &val))
+        return -EINVAL;
 
-	t->gaming_mode = val;
+    tunables->gaming_mode = !!val;
 
-	if (!val) {
-    	list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
-        	rfx_pol->gaming_lock_end_ns      = 0;
-        	rfx_pol->current_mode            = RFX_MODE_NORMAL;
-        	rfx_pol->in_heavy_mode           = false;
-        	rfx_pol->in_light_mode           = false;
-        	rfx_pol->force_idle              = false;
-        	rfx_pol->need_freq_update        = true;
-        	rfx_pol->mode_switch_time_ns     = ktime_get_ns();
-        	rfx_pol->game_launching          = false;
-        	rfx_pol->game_launch_end_ns      = 0;
-        	rfx_pol->prime_gaming_floor_active = false;
-        	rfx_pol->prime_gaming_floor_end_ns = 0;
-        	rfx_pol->render_urgency_active   = false;
-            rfx_pol->render_boost_end_ns   = 0;
-            /* v1.1 reset */
-            rfx_pol->peak_starve_count     = 0;
-			rfx_pol->peak_rescue_until_ns  = 0;
-			rfx_pol->peak_hyst_streak      = 0;
-			rfx_pol->peak_hyst_prev_freq   = 0;
-            rfx_pol->wake_pulse_end_ns     = 0;
-            rfx_pol->migration_in_until_ns = 0;
-    	}
-	}
-	return count;
+    /* FIX: Reset semua gaming state saat mode diaktifkan ulang */
+    list_for_each_entry(rfx_pol, &attr_set->policy_list, tunables_hook) {
+        u64 now = ktime_get_ns();
+        rfx_pol->gaming_lock_end_ns         = now;   /* reset lock */
+        rfx_pol->render_urgency_active      = false;
+        rfx_pol->render_boost_end_ns        = 0;
+        rfx_pol->thermal_sustain_window_count = 0;   /* reset thermal window */
+        rfx_pol->thermal_throttle_active    = false;
+        rfx_pol->thermal_duty_window_start_ns = now;
+        rfx_pol->in_heavy_mode              = false;
+        rfx_pol->peak_starve_count          = 0;
+        rfx_pol->peak_rescue_until_ns       = 0;
+        rfx_pol->guard_end_ns               = 0;
+        if (val)  /* hanya reset game_launch saat baru ON */
+            rfx_pol->game_launching         = false;
+    }
+    return count;
 }
 static struct governor_attr gaming_mode =
 	__ATTR(gaming_mode, 0644, gaming_mode_show, gaming_mode_store);
