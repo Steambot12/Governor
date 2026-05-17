@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 5000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
+unsigned int sysctl_sched_latency			= 6000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 8000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 8000000ULL;
@@ -76,8 +76,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 1500000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 1500000ULL;
+unsigned int sysctl_sched_min_granularity			= 2000000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 2000000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_min_granularity			= 3000000ULL;
  static unsigned int normalized_sysctl_sched_min_granularity	= 3000000ULL;
@@ -118,12 +118,12 @@ const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 1;
-u8   __read_mostly sched_burst_smoothness_short = 2;
-u8   __read_mostly sched_burst_fork_atavistic   = 3;
+u8   __read_mostly sched_burst_smoothness_long  = 2;
+u8   __read_mostly sched_burst_smoothness_short = 1;
+u8   __read_mostly sched_burst_fork_atavistic   = 2;
 u8   __read_mostly sched_burst_penalty_offset   = 26;
-uint __read_mostly sched_burst_penalty_scale    = 720;
-uint __read_mostly sched_burst_cache_lifetime   = 35000000;
+uint __read_mostly sched_burst_penalty_scale    = 580;
+uint __read_mostly sched_burst_cache_lifetime   = 60000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 6;
