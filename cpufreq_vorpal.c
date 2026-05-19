@@ -556,27 +556,39 @@ static inline unsigned int rfx_gaming_sustain_lock(struct rfx_policy *rfx_pol,
  * This reduces average CPU usage and prevents thermal buildup.
  */
 static inline unsigned long rfx_cpu_soft_ceiling(struct rfx_policy *rfx_pol,
-                                                   unsigned long util,
-                                                   unsigned long max_cap,
-                                                   unsigned int util_pct)
+                                                  unsigned long util,
+                                                  unsigned long max_cap,
+                                                  unsigned int util_pct)
 {
-    unsigned long boosted_util = util;
+    unsigned long clamped_util = util;
 
-    if (!max_cap)
+    if (!max_cap || !rfx_pol->tunables->gaming_mode)
         return util;
 
-    if (util_pct > RFX_CPU_USAGE_BOOST_THRESHOLD) {
-        /* Apply headroom to finish work faster */
-        boosted_util = util + (util * RFX_CPU_USAGE_HEADROOM_PCT / 100);
-        if (boosted_util > max_cap)
-            boosted_util = max_cap;
-
-        /* Track ceiling activation for telemetry */
+    /*
+     * Gaming Soft Ceiling v2.1:
+     * Target CPU usage <65%. Kalau util sudah >65%, clamp util ke 65%
+     * dari max_cap agar governor tidak meminta frekuensi terlalu tinggi.
+     * Ini mencegah CPU usage overshoot tanpa mengorbankan responsiveness.
+     */
+    if (util_pct > RFX_CPU_USAGE_TARGET_PCT) {
+        /* Clamp: jangan minta lebih dari target pct */
+        unsigned long target_util = max_cap * RFX_CPU_USAGE_TARGET_PCT / 100;
+        if (clamped_util > target_util)
+            clamped_util = target_util;
         rfx_pol->cpu_soft_ceiling_count++;
         rfx_pol->cpu_ceiling_last_ns = ktime_get_ns();
+    } else if (util_pct > RFX_CPU_USAGE_BOOST_THRESHOLD) {
+        /*
+         * Zona 55–65%: tambah headroom kecil agar kerja selesai lebih cepat
+         * dan CPU cepat turun ke idle. Ini zona "smooth".
+         */
+        clamped_util = util + (util * 4 / 100); /* +4% headroom saja */
+        if (clamped_util > max_cap)
+            clamped_util = max_cap;
     }
 
-    return boosted_util;
+    return clamped_util;
 }
 
 /*
@@ -1015,12 +1027,18 @@ static unsigned long rfx_apply_headroom(unsigned long util,
     is_prime = (max_cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD);
 
     if (mode == RFX_MODE_GAMING) {
+    	if (util_pct >= 70) {
+        	headroom_pct = is_heavy ? 8 : 4;   /* minimal, prevent overshoot */
+    	} else if (util_pct >= 50) {
+        	headroom_pct = is_heavy ? 18 : 12; /* sedang */
+    	} else {
         if (is_prime)
             headroom_pct = is_heavy ? 30 : 22;
         else
-            headroom_pct = is_heavy ? 30 : 24;
-        return min(util + util * headroom_pct / 100, max_cap);
-    }
+            headroom_pct = is_heavy ? 28 : 20;
+    	}
+    	return min(util + util * headroom_pct / 100, max_cap);
+	}
 
     /* Video mode */
     if (mode == RFX_MODE_VIDEO) {
@@ -2734,7 +2752,6 @@ free_rfx_pol:
 disable_fast_switch:
     cpufreq_disable_fast_switch(policy);
     pr_err("vorpal: init failed error %d\n", ret);
-return ret;
     return ret;
 }
 
