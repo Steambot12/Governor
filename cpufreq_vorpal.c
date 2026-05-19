@@ -109,7 +109,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 #define RFX_BURST_GUARD_NS          (250 * NSEC_PER_MSEC)
-#define RFX_BURST_GUARD_NS_GAMING   (400 * NSEC_PER_MSEC)  /* v2.0: extended for gaming */
+#define RFX_BURST_GUARD_NS_GAMING   (500 * NSEC_PER_MSEC)  /* v2.0: extended for gaming */
 #define RFX_BURST_DROP_THRESHOLD    12
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
@@ -155,10 +155,10 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_BIG_INTERACTIVE_FLOOR_KHZ   600000
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
-#define RFX_THERMAL_WINDOW_NS           (14000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS    (11000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS   (800 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT    86
+#define RFX_THERMAL_WINDOW_NS           (18000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS    (15000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS   (350 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT    90
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 90
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 75
 
@@ -207,7 +207,7 @@ extern unsigned int sysctl_sched_latency;
 /* Frekuensi tidak boleh turun >12% dalam satu window saat gaming */
 #define RFX_GAMING_MAX_DROP_PCT           12
 #define RFX_GAMING_SUSTAIN_WINDOW_NS      (50 * NSEC_PER_MSEC) /* down delay gaming */
-#define RFX_GAMING_HYSTERESIS_FLOOR_PCT   85  /* min freq floor saat gaming lock */
+#define RFX_GAMING_HYSTERESIS_FLOOR_PCT   82  /* min freq floor saat gaming lock */
 
 /* === CPU USAGE SOFT CEILING - NEW v2.0 === */
 #define RFX_CPU_USAGE_TARGET_PCT          62  /* target ~62% CPU usage */
@@ -216,7 +216,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* === ANTI-JITTER PARAMS - TUNED v2.0 === */
 /* Down rate gaming: 50ms (naik dari 22ms/35ms) */
-#define CPUFREQ_VORPAL_GAMING_DOWN_DELAY_US  50000
+#define CPUFREQ_VORPAL_GAMING_DOWN_DELAY_US  65000
 
 /* === GAME-SPECIFIC PATTERN WINDOWS - NEW v2.0 === */
 #define RFX_WUWA_ANIM_WINDOW_NS           (800 * NSEC_PER_MSEC)
@@ -484,9 +484,12 @@ static inline bool rfx_frame_pacer(struct rfx_policy *rfx_pol,
                 rfx_pol->frame_boost_end_ns = time + RFX_FRAME_BOOST_DURATION_NS;
                 rfx_pol->frame_boost_count = 0;
             }
-        } else {
-            /* Reset count if gap too large */
-            rfx_pol->frame_boost_count = 1;
+        } else if (rfx_pol->frame_boost_count > 0) {
+            rfx_pol->frame_boost_count++; /* BENAR: increment, pertahankan momentum */
+    if (rfx_pol->frame_boost_count > 4)
+        rfx_pol->frame_boost_count = 4; /* cap agar tidak overflow */
+    } else {
+        rfx_pol->frame_boost_count = 1;
         }
         rfx_pol->frame_last_heavy_ns = time;
     }
@@ -540,11 +543,9 @@ static inline unsigned int rfx_gaming_sustain_lock(struct rfx_policy *rfx_pol,
     if (next_freq < min_allowed_freq)
         next_freq = min_allowed_freq;
 
-    /* Update tracking (only if freq went up or stayed within bounds) */
-    if (next_freq >= rfx_pol->gaming_prev_freq_khz) {
-        rfx_pol->gaming_prev_freq_khz = next_freq;
-        rfx_pol->gaming_sustain_update_ns = time;
-    }
+    /* SELALU update tracking setiap window — bukan hanya saat naik */
+    rfx_pol->gaming_prev_freq_khz = next_freq;
+    rfx_pol->gaming_sustain_update_ns = time;
 
     return next_freq;
 }
@@ -571,21 +572,15 @@ static inline unsigned long rfx_cpu_soft_ceiling(struct rfx_policy *rfx_pol,
      * dari max_cap agar governor tidak meminta frekuensi terlalu tinggi.
      * Ini mencegah CPU usage overshoot tanpa mengorbankan responsiveness.
      */
-    if (util_pct > RFX_CPU_USAGE_TARGET_PCT) {
-        /* Clamp: jangan minta lebih dari target pct */
+    if (util_pct > RFX_CPU_USAGE_TARGET_PCT && !rfx_pol->tunables->gaming_mode) {
+    /* Clamp HANYA di non-gaming mode untuk battery saving */
         unsigned long target_util = max_cap * RFX_CPU_USAGE_TARGET_PCT / 100;
-        if (clamped_util > target_util)
-            clamped_util = target_util;
-        rfx_pol->cpu_soft_ceiling_count++;
-        rfx_pol->cpu_ceiling_last_ns = ktime_get_ns();
+        clamped_util = target_util;
     } else if (util_pct > RFX_CPU_USAGE_BOOST_THRESHOLD) {
-        /*
-         * Zona 55–65%: tambah headroom kecil agar kerja selesai lebih cepat
-         * dan CPU cepat turun ke idle. Ini zona "smooth".
-         */
-        clamped_util = util + (util * 4 / 100); /* +4% headroom saja */
-        if (clamped_util > max_cap)
-            clamped_util = max_cap;
+    /* Gaming: beri headroom kecil, tidak clamp */
+    clamped_util = util + (util * 4 / 100);
+    if (clamped_util > max_cap)
+        clamped_util = max_cap;
     }
 
     return clamped_util;
