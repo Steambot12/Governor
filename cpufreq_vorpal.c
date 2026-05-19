@@ -195,19 +195,20 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_TARGET_FPS                    120
 #define RFX_FRAME_INTERVAL_NS             (NSEC_PER_SEC / RFX_TARGET_FPS) /* ~8.33ms */
 #define RFX_FRAME_PREDICT_WINDOW_NS       (3 * RFX_FRAME_INTERVAL_NS)    /* 3 frames lookahead */
-#define RFX_FRAME_BOOST_FLOOR_PCT         88  /* floor saat frame deadline approaching */
-#define RFX_FRAME_BOOST_DURATION_NS       (12 * NSEC_PER_MSEC)
+#define RFX_FRAME_BOOST_FLOOR_PCT         90  /* floor saat frame deadline approaching */
+#define RFX_FRAME_BOOST_DURATION_NS       (20 * NSEC_PER_MSEC)
 #define RFX_FRAME_PACER_ENABLE            1
+#define RFX_FRAME_BOOST_THRESHOLD         1
 
 /* === EMA SMOOTHING - NEW v2.0 === */
-#define RFX_EMA_ALPHA_GAMING              3   /* shift: 1/8 weight new sample */
-#define RFX_EMA_ALPHA_NORMAL              2   /* shift: 1/4 weight new sample */
+#define RFX_EMA_ALPHA_GAMING              4   /* shift: 1/8 weight new sample */
+#define RFX_EMA_ALPHA_NORMAL              3   /* shift: 1/4 weight new sample */
 
 /* === SUSTAINED FREQ LOCK - NEW v2.0 === */
 /* Frekuensi tidak boleh turun >12% dalam satu window saat gaming */
-#define RFX_GAMING_MAX_DROP_PCT           12
-#define RFX_GAMING_SUSTAIN_WINDOW_NS      (50 * NSEC_PER_MSEC) /* down delay gaming */
-#define RFX_GAMING_HYSTERESIS_FLOOR_PCT   82  /* min freq floor saat gaming lock */
+#define RFX_GAMING_MAX_DROP_PCT            8
+#define RFX_GAMING_SUSTAIN_WINDOW_NS      (100 * NSEC_PER_MSEC) /* down delay gaming */
+#define RFX_GAMING_HYSTERESIS_FLOOR_PCT   85  /* min freq floor saat gaming lock */
 
 /* === CPU USAGE SOFT CEILING - NEW v2.0 === */
 #define RFX_CPU_USAGE_TARGET_PCT          62  /* target ~62% CPU usage */
@@ -216,7 +217,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* === ANTI-JITTER PARAMS - TUNED v2.0 === */
 /* Down rate gaming: 50ms (naik dari 22ms/35ms) */
-#define CPUFREQ_VORPAL_GAMING_DOWN_DELAY_US  65000
+#define CPUFREQ_VORPAL_GAMING_DOWN_DELAY_US  80000
 
 /* === GAME-SPECIFIC PATTERN WINDOWS - NEW v2.0 === */
 #define RFX_WUWA_ANIM_WINDOW_NS           (800 * NSEC_PER_MSEC)
@@ -478,11 +479,13 @@ static inline bool rfx_frame_pacer(struct rfx_policy *rfx_pol,
         if (time_since_last < RFX_FRAME_PREDICT_WINDOW_NS) {
             /* Consecutive heavy frames = approaching deadline */
             rfx_pol->frame_boost_count++;
-            if (rfx_pol->frame_boost_count >= 2) {
+            if (rfx_pol->frame_boost_count >= RFX_FRAME_BOOST_THRESHOLD) {
                 should_boost = true;
-                rfx_pol->frame_boost_active = true;
-                rfx_pol->frame_boost_end_ns = time + RFX_FRAME_BOOST_DURATION_NS;
-                rfx_pol->frame_boost_count = 0;
+            rfx_pol->frame_boost_active = true;
+            rfx_pol->frame_boost_end_ns = time + RFX_FRAME_BOOST_DURATION_NS;
+            /* Jangan reset count ke 0, biarkan momentum berlanjut */
+            if (rfx_pol->frame_boost_count > 2)
+                rfx_pol->frame_boost_count = 2;
             }
         } else if (rfx_pol->frame_boost_count > 0) {
             rfx_pol->frame_boost_count++; /* BENAR: increment, pertahankan momentum */
@@ -540,11 +543,14 @@ static inline unsigned int rfx_gaming_sustain_lock(struct rfx_policy *rfx_pol,
     }
 
     /* Enforce sustained lock */
-    if (next_freq < min_allowed_freq)
-        next_freq = min_allowed_freq;
-
-    /* SELALU update tracking setiap window — bukan hanya saat naik */
-    rfx_pol->gaming_prev_freq_khz = next_freq;
+    if (next_freq > rfx_pol->gaming_prev_freq_khz) {
+    /* Naik: update langsung */
+        rfx_pol->gaming_prev_freq_khz = next_freq;
+    } else {
+    /* Turun: EMA-smooth reference point agar tidak terlalu agresif ikut turun */
+        rfx_pol->gaming_prev_freq_khz = 
+        (rfx_pol->gaming_prev_freq_khz * 7 + next_freq) / 8;
+    }
     rfx_pol->gaming_sustain_update_ns = time;
 
     return next_freq;
@@ -563,24 +569,23 @@ static inline unsigned long rfx_cpu_soft_ceiling(struct rfx_policy *rfx_pol,
 {
     unsigned long clamped_util = util;
 
-    if (!max_cap || !rfx_pol->tunables->gaming_mode)
+    if (!max_cap)
         return util;
 
-    /*
-     * Gaming Soft Ceiling v2.1:
-     * Target CPU usage <65%. Kalau util sudah >65%, clamp util ke 65%
-     * dari max_cap agar governor tidak meminta frekuensi terlalu tinggi.
-     * Ini mencegah CPU usage overshoot tanpa mengorbankan responsiveness.
-     */
-    if (util_pct > RFX_CPU_USAGE_TARGET_PCT && !rfx_pol->tunables->gaming_mode) {
-    /* Clamp HANYA di non-gaming mode untuk battery saving */
-        unsigned long target_util = max_cap * RFX_CPU_USAGE_TARGET_PCT / 100;
-        clamped_util = target_util;
-    } else if (util_pct > RFX_CPU_USAGE_BOOST_THRESHOLD) {
-    /* Gaming: beri headroom kecil, tidak clamp */
-    clamped_util = util + (util * 4 / 100);
-    if (clamped_util > max_cap)
-        clamped_util = max_cap;
+    if (!rfx_pol->tunables->gaming_mode) {
+        /* Non-gaming: clamp jika >62% untuk battery saving */
+        if (util_pct > RFX_CPU_USAGE_TARGET_PCT) {
+            unsigned long target_util = max_cap * RFX_CPU_USAGE_TARGET_PCT / 100;
+            clamped_util = target_util;
+        }
+    } else {
+        /* Gaming: beri headroom untuk percepat frame completion */
+        if (util_pct > RFX_CPU_USAGE_BOOST_THRESHOLD) {
+            /* Headroom 10% agar frame selesai lebih cepat → CPU lebih cepat idle */
+            clamped_util = util + (util * 10 / 100);
+            if (clamped_util > max_cap)
+                clamped_util = max_cap;
+        }
     }
 
     return clamped_util;
@@ -1289,10 +1294,10 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
     if (rfx_pol->render_urgency_active && rfx_pol->render_boost_end_ns &&
         time < rfx_pol->render_boost_end_ns) {
-        if (is_prime && freq < rfx_adaptive_floor(policy, 85))
-            freq = rfx_adaptive_floor(policy, 85);
-        else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 78))
-            freq = rfx_adaptive_floor(policy, 78);
+        if (is_prime && freq < rfx_adaptive_floor(policy, 88))
+            freq = rfx_adaptive_floor(policy, 88);
+        else if (!is_little && !is_prime && freq < rfx_adaptive_floor(policy, 82))
+            freq = rfx_adaptive_floor(policy, 82);
     }
 
     /* v2.0: Frame Pacing Engine floor */
@@ -1852,9 +1857,9 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
         /* Re-calculate effective util from EMA pct to maintain consistency */
         unsigned long ema_util = (unsigned long)rfx_c->ema_util_pct_local * max_cap / 100;
         /* Blend: 70% EMA + 30% raw for responsiveness */
-        effective_util = (ema_util * 7 + effective_util * 3) / 10;
-        if (effective_util > max_cap)
-            effective_util = max_cap;
+        effective_util = (ema_util * 8 + effective_util * 2) / 10;
+    if (effective_util > max_cap)
+        effective_util = max_cap;
     }
 
     hist_snap = rfx_c->util_history_idx;
@@ -1874,6 +1879,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
         rfx_pol->render_urgency_active = true;
         if (!rfx_pol->render_boost_end_ns || time >= rfx_pol->render_boost_end_ns)
             rfx_pol->render_boost_end_ns = time + RFX_FRAME_BOOST_DURATION_NS;
+        rfx_pol->need_freq_update = true;
     }
 
     if (!rfx_pol->tunables->gaming_mode && rfx_pol->current_mode == RFX_MODE_GAMING) {
