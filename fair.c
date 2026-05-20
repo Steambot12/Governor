@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 4000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 4000000ULL;
+unsigned int sysctl_sched_latency			= 12000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 12000000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 8000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 8000000ULL;
@@ -67,7 +67,7 @@ EXPORT_SYMBOL_GPL(sysctl_sched_latency);
 #ifdef CONFIG_SCHED_BORE
  enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
 #else // CONFIG_SCHED_BORE
-enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
+enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
 #endif // CONFIG_SCHED_BORE
 /*
  * Minimal preemption granularity for CPU-bound tasks:
@@ -76,8 +76,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 1250000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 1250000ULL;
+unsigned int sysctl_sched_min_granularity			= 1500000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 1500000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_min_granularity			= 3000000ULL;
  static unsigned int normalized_sysctl_sched_min_granularity	= 3000000ULL;
@@ -106,24 +106,24 @@ unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1500000ULL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1500000ULL;
+unsigned int sysctl_sched_wakeup_granularity			= 2000000ULL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 2000000ULL;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 1;
-u8   __read_mostly sched_burst_smoothness_short = 1;
-u8   __read_mostly sched_burst_fork_atavistic   = 2;
+u8   __read_mostly sched_burst_smoothness_long  = 2;
+u8   __read_mostly sched_burst_smoothness_short = 2;
+u8   __read_mostly sched_burst_fork_atavistic   = 3;
 u8   __read_mostly sched_burst_penalty_offset   = 22;
-uint __read_mostly sched_burst_penalty_scale    = 480;
-uint __read_mostly sched_burst_cache_lifetime   = 45000000;
+uint __read_mostly sched_burst_penalty_scale    = 800;
+uint __read_mostly sched_burst_cache_lifetime   = 100000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
