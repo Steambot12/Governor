@@ -43,14 +43,14 @@ extern unsigned int sysctl_sched_latency;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    8000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    12000
 
 /* Default: Ultra-fast 10us for instant response */
-#define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        10
+#define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        5
 #define CPUFREQ_VORPAL_UP_RATE_LIMIT_US             0
 
 /* BIG: balance between gaming stability and battery */
-#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    8000
+#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    12000
 
 /* LITTLE: AGGRESSIVE IDLE - Fix stuck issue */
 #define CPUFREQ_VORPAL_LITTLE_UP_RATE_LIMIT_US      0
@@ -63,7 +63,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   8000
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   12000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
@@ -73,7 +73,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* Hispeed: Thermal vs Performance Balance - TUNED */
 #define CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT   72
-#define RFX_HISPEED_GAMING_PCT                       85
+#define RFX_HISPEED_GAMING_PCT                       80
 #define RFX_HISPEED_DAILY_PCT                        55
 #define RFX_HISPEED_VIDEO_PCT                        72
 
@@ -86,32 +86,32 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS          (250 * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD    12
+#define RFX_BURST_GUARD_NS          (150 * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD    8
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   35
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    20
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   40
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT    15
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
 #define RFX_SUSTAIN_EXIT_TICKS         8
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (12000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (8000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              90
-#define RFX_BIG_GAMING_MAX_PCT          88
-#define RFX_PRIME_GAMING_FLOOR_PCT      82
+#define RFX_GAMING_MAX_PCT              85
+#define RFX_BIG_GAMING_MAX_PCT          83
+#define RFX_PRIME_GAMING_FLOOR_PCT      78
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
-#define RFX_LITTLE_GAMING_CAP_PCT       85
+#define RFX_LITTLE_GAMING_CAP_PCT       75
 
 /* === LIGHT MODE - AGGRESSIVE IDLE === */
 
-#define RFX_LIGHT_ENTER_PCT     3
-#define RFX_LIGHT_ENTER_TICKS   3
+#define RFX_LIGHT_ENTER_PCT     2
+#define RFX_LIGHT_ENTER_TICKS   2
 #define RFX_LIGHT_EXIT_PCT     12
 
 /* === IDLE & DEEPSLEEP - <1% DRAIN TARGET === */
@@ -135,11 +135,11 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL === */
 
-#define RFX_THERMAL_WINDOW_NS            (14000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (11000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS            (10000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (8000 * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_BURST_NS    (800  * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT     86
-#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 90
+#define RFX_THERMAL_THROTTLE_CAP_PCT     80
+#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 82
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
 
 /* Extended interactive - shorter */
@@ -174,7 +174,7 @@ extern unsigned int sysctl_sched_latency;
  * ================================================================ */
 
 /* 1. Touch Input Boost */
-#define RFX_TOUCH_BOOST_DURATION_NS     (80 * NSEC_PER_MSEC)
+#define RFX_TOUCH_BOOST_DURATION_NS     (50 * NSEC_PER_MSEC)
 #define RFX_TOUCH_BOOST_PRIME_PCT       92
 #define RFX_TOUCH_BOOST_BIG_PCT         85
 
@@ -184,9 +184,9 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_PREDICT_VAR_THRESHOLD       15
 
 /* 3. Jitter Compensation Engine */
-#define RFX_JITTER_UTIL_VAR_THRESHOLD   12
-#define RFX_JITTER_HEADROOM_PCT         8
-#define RFX_JITTER_HIGH_HEADROOM_PCT    5
+#define RFX_JITTER_UTIL_VAR_THRESHOLD   8
+#define RFX_JITTER_HEADROOM_PCT         12
+#define RFX_JITTER_HIGH_HEADROOM_PCT    8
 
 /* 4. Gaming Cluster Sync */
 #define RFX_GAMING_SYNC_DOWN_HOLD_NS    (50000 * NSEC_PER_USEC) /* 50ms */
@@ -201,7 +201,7 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_BURST_PRELOAD_FLOOR_PCT    70
 
 /* 7. Adaptive PELT Decay Override */
-#define RFX_GAMING_RAMP_MULTIPLIER      140  /* 1.4x */
+#define RFX_GAMING_RAMP_MULTIPLIER      125  /* 1.4x */
 #define RFX_GAMING_RAMP_THRESHOLD_PCT   25
 
 /* === ADAPTIVE FREQ HELPERS - UNIVERSAL SoC SUPPORT === */
@@ -880,9 +880,9 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
     if (mode == RFX_MODE_GAMING) {
         if (is_prime)
-            headroom_pct = is_heavy ? 30 : 22;
+            headroom_pct = is_heavy ? 22 : 15;
         else
-            headroom_pct = is_heavy ? 30 : 24;
+            headroom_pct = is_heavy ? 20 : 12;
 
         /* Jitter Compensation: extra headroom when unstable */
         if (rfx_pol->jitter_score > RFX_JITTER_UTIL_VAR_THRESHOLD) {
@@ -1185,8 +1185,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     /* Touch Input Boost (BIG/PRIME only during gaming) */
     if (!is_little) {
         u64 touch_expires = atomic64_read(&rfx_touch_boost_expires_ns);
-        if (time < touch_expires && (rfx_pol->tunables->gaming_mode ||
-            (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns))) {
+        if (time < touch_expires) {
             unsigned int tb_pct = is_prime ? RFX_TOUCH_BOOST_PRIME_PCT : RFX_TOUCH_BOOST_BIG_PCT;
             unsigned int touch_floor = rfx_adaptive_floor(policy, tb_pct);
             if (freq < touch_floor)
@@ -1745,12 +1744,10 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
         bool wuwa_anim = (h1 > 25) && (h3 > 25) && (h2 < 18);
 
         if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
-            rfx_pol->in_heavy_mode      = true;
-            rfx_pol->gaming_lock_end_ns = time +
-                (sudden_spike || wuwa_anim ? (1200 * NSEC_PER_MSEC) : (800 * NSEC_PER_MSEC));
+            rfx_pol->in_heavy_mode = true;
+            rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
             rfx_pol->render_urgency_active = true;
-            rfx_pol->render_boost_end_ns = time +
-                (sudden_spike || wuwa_anim ? (600 * NSEC_PER_MSEC) : (150 * NSEC_PER_MSEC));
+            rfx_pol->render_boost_end_ns = time + (150 * NSEC_PER_MSEC);
         }
     }
 
@@ -1766,8 +1763,11 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 
     if (!rfx_pol->tunables->gaming_mode) {
         if (rfx_c->act_state >= RFX_ACT_MEDIUM &&
-            rfx_c->prev_util_pct < 10 && cur_pct > 20)
+            rfx_c->prev_util_pct < 10 && cur_pct > 20) {
             rfx_pol->interactive_end_ns = time + RFX_INTERACTIVE_DURATION_NS;
+            rfx_pol->render_urgency_active = true;
+            rfx_pol->render_boost_end_ns = time + (80 * NSEC_PER_MSEC);
+        }
     }
 
     is_heavy = (rfx_c->act_state == RFX_ACT_HEAVY) || rfx_pol->in_heavy_mode ||
