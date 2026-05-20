@@ -155,10 +155,10 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_BIG_INTERACTIVE_FLOOR_KHZ   600000
 
 /* === TIME-BASED DUTY CYCLE THERMAL — No arch_scale dependency === */
-#define RFX_THERMAL_WINDOW_NS           (18000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS           (20000 * NSEC_PER_MSEC)
 #define RFX_THERMAL_WINDOW_SHRINK_NS    (15000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS   (350 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT    90
+#define RFX_THERMAL_THROTTLE_BURST_NS   (300 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT    88
 #define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 90
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT 75
 
@@ -195,10 +195,10 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_TARGET_FPS                    120
 #define RFX_FRAME_INTERVAL_NS             (NSEC_PER_SEC / RFX_TARGET_FPS) /* ~8.33ms */
 #define RFX_FRAME_PREDICT_WINDOW_NS       (3 * RFX_FRAME_INTERVAL_NS)    /* 3 frames lookahead */
-#define RFX_FRAME_BOOST_FLOOR_PCT         90  /* floor saat frame deadline approaching */
-#define RFX_FRAME_BOOST_DURATION_NS       (20 * NSEC_PER_MSEC)
+#define RFX_FRAME_BOOST_FLOOR_PCT         88  /* floor saat frame deadline approaching */
+#define RFX_FRAME_BOOST_DURATION_NS       (16 * NSEC_PER_MSEC)
 #define RFX_FRAME_PACER_ENABLE            1
-#define RFX_FRAME_BOOST_THRESHOLD         1
+#define RFX_FRAME_BOOST_THRESHOLD         2
 
 /* === EMA SMOOTHING - NEW v2.0 === */
 #define RFX_EMA_ALPHA_GAMING              4   /* shift: 1/8 weight new sample */
@@ -207,8 +207,8 @@ extern unsigned int sysctl_sched_latency;
 /* === SUSTAINED FREQ LOCK - NEW v2.0 === */
 /* Frekuensi tidak boleh turun >12% dalam satu window saat gaming */
 #define RFX_GAMING_MAX_DROP_PCT            8
-#define RFX_GAMING_SUSTAIN_WINDOW_NS      (100 * NSEC_PER_MSEC) /* down delay gaming */
-#define RFX_GAMING_HYSTERESIS_FLOOR_PCT   85  /* min freq floor saat gaming lock */
+#define RFX_GAMING_SUSTAIN_WINDOW_NS      (80 * NSEC_PER_MSEC) /* down delay gaming */
+#define RFX_GAMING_HYSTERESIS_FLOOR_PCT   83  /* min freq floor saat gaming lock */
 
 /* === CPU USAGE SOFT CEILING - NEW v2.0 === */
 #define RFX_CPU_USAGE_TARGET_PCT          62  /* target ~62% CPU usage */
@@ -217,7 +217,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* === ANTI-JITTER PARAMS - TUNED v2.0 === */
 /* Down rate gaming: 50ms (naik dari 22ms/35ms) */
-#define CPUFREQ_VORPAL_GAMING_DOWN_DELAY_US  80000
+#define CPUFREQ_VORPAL_GAMING_DOWN_DELAY_US  70000
 
 /* === GAME-SPECIFIC PATTERN WINDOWS - NEW v2.0 === */
 #define RFX_WUWA_ANIM_WINDOW_NS           (800 * NSEC_PER_MSEC)
@@ -471,36 +471,43 @@ static inline bool rfx_frame_pacer(struct rfx_policy *rfx_pol,
     if (!RFX_FRAME_PACER_ENABLE)
         return false;
 
+    /* Jangan proses jika last_heavy belum pernah diset */
+    if (!rfx_pol->frame_last_heavy_ns)
+        goto check_expiry;
+
     time_since_last = time - rfx_pol->frame_last_heavy_ns;
 
-    /* Detect if we're approaching a frame deadline with heavy work */
     if (util_pct >= RFX_CPU_USAGE_BOOST_THRESHOLD) {
-        /* Heavy work detected - check if within prediction window */
+        rfx_pol->frame_last_heavy_ns = time;
+
         if (time_since_last < RFX_FRAME_PREDICT_WINDOW_NS) {
-            /* Consecutive heavy frames = approaching deadline */
             rfx_pol->frame_boost_count++;
+            if (rfx_pol->frame_boost_count > 4)
+                rfx_pol->frame_boost_count = 4;
+
             if (rfx_pol->frame_boost_count >= RFX_FRAME_BOOST_THRESHOLD) {
                 should_boost = true;
-            rfx_pol->frame_boost_active = true;
-            rfx_pol->frame_boost_end_ns = time + RFX_FRAME_BOOST_DURATION_NS;
-            /* Jangan reset count ke 0, biarkan momentum berlanjut */
-            if (rfx_pol->frame_boost_count > 2)
-                rfx_pol->frame_boost_count = 2;
+                rfx_pol->frame_boost_active = true;
+                rfx_pol->frame_boost_end_ns = time + RFX_FRAME_BOOST_DURATION_NS;
             }
-        } else if (rfx_pol->frame_boost_count > 0) {
-            rfx_pol->frame_boost_count++; /* BENAR: increment, pertahankan momentum */
-    if (rfx_pol->frame_boost_count > 4)
-        rfx_pol->frame_boost_count = 4; /* cap agar tidak overflow */
-    } else {
-        rfx_pol->frame_boost_count = 1;
+        } else {
+            /* Di luar window — reset count, mulai lagi dari 1 */
+            rfx_pol->frame_boost_count = 1;
         }
-        rfx_pol->frame_last_heavy_ns = time;
+    } else {
+        /* Util rendah: decay count perlahan (jangan langsung 0) */
+        if (rfx_pol->frame_boost_count > 0)
+            rfx_pol->frame_boost_count--;
     }
 
-    /* Clear boost if expired */
+check_expiry:
+    if (!rfx_pol->frame_last_heavy_ns && util_pct >= RFX_CPU_USAGE_BOOST_THRESHOLD)
+        rfx_pol->frame_last_heavy_ns = time;
+
     if (rfx_pol->frame_boost_active &&
         time >= rfx_pol->frame_boost_end_ns) {
         rfx_pol->frame_boost_active = false;
+        rfx_pol->frame_boost_count = 0;
     }
 
     return should_boost;
@@ -522,7 +529,6 @@ static inline unsigned int rfx_gaming_sustain_lock(struct rfx_policy *rfx_pol,
     if (!rfx_pol->tunables->gaming_mode)
         return next_freq;
 
-    /* Initialize on first call or after window reset */
     if (time - rfx_pol->gaming_sustain_update_ns > RFX_GAMING_SUSTAIN_WINDOW_NS ||
         rfx_pol->gaming_prev_freq_khz == 0) {
         rfx_pol->gaming_prev_freq_khz = next_freq;
@@ -530,11 +536,9 @@ static inline unsigned int rfx_gaming_sustain_lock(struct rfx_policy *rfx_pol,
         return next_freq;
     }
 
-    /* Calculate max allowed drop from previous frequency */
     max_drop = rfx_pol->gaming_prev_freq_khz * RFX_GAMING_MAX_DROP_PCT / 100;
     min_allowed_freq = rfx_pol->gaming_prev_freq_khz - max_drop;
 
-    /* Apply hysteresis floor */
     if (rfx_pol->policy) {
         unsigned int hysteresis_floor = rfx_adaptive_floor(rfx_pol->policy,
                                                           RFX_GAMING_HYSTERESIS_FLOOR_PCT);
@@ -542,18 +546,20 @@ static inline unsigned int rfx_gaming_sustain_lock(struct rfx_policy *rfx_pol,
             min_allowed_freq = hysteresis_floor;
     }
 
-    /* Enforce sustained lock */
+    /* FIX: Enforce floor — baris ini yang hilang */
+    if (next_freq < min_allowed_freq)
+        next_freq = min_allowed_freq;
+
+    /* Smooth EMA tracking */
     if (next_freq > rfx_pol->gaming_prev_freq_khz) {
-    /* Naik: update langsung */
         rfx_pol->gaming_prev_freq_khz = next_freq;
     } else {
-    /* Turun: EMA-smooth reference point agar tidak terlalu agresif ikut turun */
-        rfx_pol->gaming_prev_freq_khz = 
-        (rfx_pol->gaming_prev_freq_khz * 7 + next_freq) / 8;
+        rfx_pol->gaming_prev_freq_khz =
+            (rfx_pol->gaming_prev_freq_khz * 7 + next_freq) / 8;
     }
     rfx_pol->gaming_sustain_update_ns = time;
 
-    return next_freq;
+    return next_freq;  /* return next_freq yang sudah di-clamp */
 }
 
 /*
@@ -573,18 +579,23 @@ static inline unsigned long rfx_cpu_soft_ceiling(struct rfx_policy *rfx_pol,
         return util;
 
     if (!rfx_pol->tunables->gaming_mode) {
-        /* Non-gaming: clamp jika >62% untuk battery saving */
+        /* Non-gaming: clamp di 62% untuk battery */
         if (util_pct > RFX_CPU_USAGE_TARGET_PCT) {
-            unsigned long target_util = max_cap * RFX_CPU_USAGE_TARGET_PCT / 100;
-            clamped_util = target_util;
+            clamped_util = max_cap * RFX_CPU_USAGE_TARGET_PCT / 100;
         }
     } else {
-        /* Gaming: beri headroom untuk percepat frame completion */
-        if (util_pct > RFX_CPU_USAGE_BOOST_THRESHOLD) {
-            /* Headroom 10% agar frame selesai lebih cepat → CPU lebih cepat idle */
-            clamped_util = util + (util * 10 / 100);
+        /* Gaming balanced: headroom hanya saat util MODERAT (55–70%) */
+        /* Saat util >75%, JANGAN tambah headroom — justru suhu akan naik */
+        if (util_pct > RFX_CPU_USAGE_BOOST_THRESHOLD && util_pct <= 72) {
+            /* Headroom 5% saja — cukup untuk responsiveness */
+            clamped_util = util + (util * 5 / 100);
             if (clamped_util > max_cap)
                 clamped_util = max_cap;
+        } else if (util_pct > 80) {
+            /* Util sangat tinggi: clamp di 82% agar tidak thermal spike */
+            unsigned long ceiling = max_cap * 82 / 100;
+            if (clamped_util > ceiling)
+                clamped_util = ceiling;
         }
     }
 
@@ -967,6 +978,7 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
     u64 time_since_gaming;
     u64 window_elapsed;
     u64 effective_window;
+    u64 grace_ns;
 
     if (!rfx_pol->in_heavy_mode ||
         rfx_pol->current_mode != RFX_MODE_GAMING)
@@ -977,7 +989,10 @@ static void rfx_thermal_duty_cycle(struct rfx_policy *rfx_pol, u64 time)
 
     time_since_gaming = time - rfx_pol->mode_switch_time_ns;
 
-    if (time_since_gaming < (3000 * NSEC_PER_MSEC)) {
+    grace_ns = rfx_pol->tunables->gaming_mode
+        ? (5000 * NSEC_PER_MSEC)   /* manual gaming_mode: 5s grace */
+        : (3000 * NSEC_PER_MSEC);  /* auto-detect: 3s grace */
+    if (time_since_gaming < grace_ns) {
         rfx_pol->thermal_throttle_active = false;
         return;
     }
