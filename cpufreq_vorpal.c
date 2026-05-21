@@ -43,87 +43,87 @@ extern unsigned int sysctl_sched_latency;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    60000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    80000
 
 /* Default: Ultra-fast 10us for instant response */
-#define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        5
+#define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US       10
 #define CPUFREQ_VORPAL_UP_RATE_LIMIT_US             0
 
 /* BIG: balance between gaming stability and battery */
-#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    50000
+#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    60000
 
 /* LITTLE: AGGRESSIVE IDLE - Fix stuck issue */
 #define CPUFREQ_VORPAL_LITTLE_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_LITTLE_DOWN_RATE_LIMIT_US    4000
+#define CPUFREQ_VORPAL_LITTLE_DOWN_RATE_LIMIT_US    6000
 
 /* Per-state LITTLE down delays - EXPERT IDLE TUNING */
-#define RFX_LITTLE_DOWN_HEAVY_US    20000
-#define RFX_LITTLE_DOWN_MEDIUM_US    4000
-#define RFX_LITTLE_DOWN_LIGHT_US       50
+#define RFX_LITTLE_DOWN_HEAVY_US    25000
+#define RFX_LITTLE_DOWN_MEDIUM_US    6000
+#define RFX_LITTLE_DOWN_LIGHT_US      100
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   80000
-#define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US  100000
+#define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          2
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
 
-#define CPUFREQ_VORPAL_DEFAULT_HISPEED_WINDOW_US    30
-#define CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT 0
+#define CPUFREQ_VORPAL_DEFAULT_HISPEED_WINDOW_US    50
+#define CPUFREQ_VORPAL_DEFAULT_HISPEED_FILTER_SHIFT 1
 
 /* Hispeed: Thermal vs Performance Balance - TUNED */
-#define CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT   72
-#define RFX_HISPEED_GAMING_PCT                       60
+#define CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT     78
+#define RFX_HISPEED_GAMING_PCT                       68
 #define RFX_HISPEED_DAILY_PCT                        55
-#define RFX_HISPEED_VIDEO_PCT                        72
+#define RFX_HISPEED_VIDEO_PCT                        75
 
 #define SCHED_FLAGS_UGOV    0x10000000
 #define IOWAIT_BOOST_MIN    (SCHED_CAPACITY_SCALE / 8)
 
 /* Half-life: Fast decay for battery */
-#define HISPEED_HALFLIFE_NS         (6 * NSEC_PER_MSEC)
-#define HISPEED_HALFLIFE_MAX        8
+#define HISPEED_HALFLIFE_NS         (10 * NSEC_PER_MSEC)
+#define HISPEED_HALFLIFE_MAX        10
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS          (1000 * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD    4
+#define RFX_BURST_GUARD_NS          (400 * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD    6
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   25
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    10
-#define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   22
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT     8
+#define RFX_SUSTAIN_HEAVY_BUSY_PCT     6
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS        12
+#define RFX_SUSTAIN_EXIT_TICKS        16
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (30000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (45000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              80
-#define RFX_BIG_GAMING_MAX_PCT          78
-#define RFX_PRIME_GAMING_FLOOR_PCT      70
-#define RFX_GAME_LAUNCH_FLOOR_PCT       65
-#define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
-#define RFX_LITTLE_GAMING_CAP_PCT       75
+#define RFX_GAMING_MAX_PCT              88
+#define RFX_BIG_GAMING_MAX_PCT          85
+#define RFX_PRIME_GAMING_FLOOR_PCT      78
+#define RFX_GAME_LAUNCH_FLOOR_PCT       72
+#define RFX_BIG_INTERACTIVE_FLOOR_PCT   18
+#define RFX_LITTLE_GAMING_CAP_PCT       82
 
 /* === LIGHT MODE - AGGRESSIVE IDLE === */
 
 #define RFX_LIGHT_ENTER_PCT     1
-#define RFX_LIGHT_ENTER_TICKS   5
-#define RFX_LIGHT_EXIT_PCT     12
+#define RFX_LIGHT_ENTER_TICKS   6
+#define RFX_LIGHT_EXIT_PCT     10
 
 /* === IDLE & DEEPSLEEP - <1% DRAIN TARGET === */
 
-#define RFX_IDLE_STALE_NS               (30 * NSEC_PER_MSEC)
-#define RFX_IDLE_HYSTERESIS_NS          (25 * NSEC_PER_MSEC)
+#define RFX_IDLE_STALE_NS               (40 * NSEC_PER_MSEC)
+#define RFX_IDLE_HYSTERESIS_NS          (35 * NSEC_PER_MSEC)
 
 /* === FREQUENCY FLOORS & CAPS - IDLE FIX === */
 
 /* LITTLE max cap non-gaming: 1.0GHz (save battery) */
-#define RFX_LITTLE_MAX_NON_GAMING_KHZ   960000
-#define RFX_FG_LIGHT_BIG_CAP_KHZ        500000
+#define RFX_LITTLE_MAX_NON_GAMING_KHZ   900000
+#define RFX_FG_LIGHT_BIG_CAP_KHZ        400000
 
 #define RFX_INTERACTIVE_UTIL_PCT        1
 
@@ -131,78 +131,78 @@ extern unsigned int sysctl_sched_latency;
 #define RFX_INTERACTIVE_FLOOR_KHZ       300000
 
 /* BIG/PRIME floors - COOLER */
-#define RFX_BIG_INTERACTIVE_FLOOR_KHZ   600000
+#define RFX_BIG_INTERACTIVE_FLOOR_KHZ   500000
 
 /* === TIME-BASED DUTY CYCLE THERMAL === */
 
-#define RFX_THERMAL_WINDOW_NS            (60000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (60000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (100  * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_NS            (90000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (90000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (200  * NSEC_PER_MSEC)
 #define RFX_THERMAL_THROTTLE_CAP_PCT     95
-#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 95
-#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
+#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 90
+#define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  78
 
 /* Extended interactive - shorter */
-#define RFX_INTERACTIVE_DURATION_NS     (3000 * NSEC_PER_MSEC)
-#define RFX_VIDEO_DETECT_THRESHOLD_NS   (200 * NSEC_PER_MSEC)
+#define RFX_INTERACTIVE_DURATION_NS     (2500 * NSEC_PER_MSEC)
+#define RFX_VIDEO_DETECT_THRESHOLD_NS   (300 * NSEC_PER_MSEC)
 #define RFX_IDLE_DEEP_CAP_KHZ_FALLBACK  300000
 
 /* === CLUSTER THRESHOLDS === */
 
 #define RFX_LITTLE_CAP_THRESHOLD    614
 #define RFX_PRIME_CAP_THRESHOLD     1000
-#define RFX_BIG_DROP_PCT            13
+#define RFX_BIG_DROP_PCT            10
 
 /* === ACTIVITY STATE MACHINE - FAST IDLE === */
 
 #define RFX_ACT_UP_TICKS    1
-#define RFX_ACT_DOWN_TICKS  1
+#define RFX_ACT_DOWN_TICKS  2
 
-#define RFX_ACT_IDLE_TO_LIGHT_PCT   4
-#define RFX_ACT_LIGHT_TO_MED_PCT   20
-#define RFX_ACT_MED_TO_HEAVY_PCT   40
-#define RFX_ACT_HEAVY_TO_MED_PCT   22
-#define RFX_ACT_MED_TO_LIGHT_PCT    6
-#define RFX_ACT_LIGHT_TO_IDLE_PCT   3
+#define RFX_ACT_IDLE_TO_LIGHT_PCT   3
+#define RFX_ACT_LIGHT_TO_MED_PCT   18
+#define RFX_ACT_MED_TO_HEAVY_PCT   35
+#define RFX_ACT_HEAVY_TO_MED_PCT   20
+#define RFX_ACT_MED_TO_LIGHT_PCT    5
+#define RFX_ACT_LIGHT_TO_IDLE_PCT   2
 
 /* LITTLE freq caps - STRICT IDLE */
-#define RFX_LITTLE_LIGHT_MAX_FREQ_KHZ   400000
-#define RFX_LITTLE_MED_MAX_FREQ_KHZ     800000
+#define RFX_LITTLE_LIGHT_MAX_FREQ_KHZ   350000
+#define RFX_LITTLE_MED_MAX_FREQ_KHZ     750000
 
 /* ================================================================
  *  NEW FEATURES DEFINES
  * ================================================================ */
 
 /* 1. Touch Input Boost */
-#define RFX_TOUCH_BOOST_DURATION_NS     (50 * NSEC_PER_MSEC)
-#define RFX_TOUCH_BOOST_PRIME_PCT       92
-#define RFX_TOUCH_BOOST_BIG_PCT         85
+#define RFX_TOUCH_BOOST_DURATION_NS     (80 * NSEC_PER_MSEC)
+#define RFX_TOUCH_BOOST_PRIME_PCT       95
+#define RFX_TOUCH_BOOST_BIG_PCT         88
 
 /* 2. Predictive Load Engine */
-#define RFX_PREDICT_EMA_ALPHA_SHIFT     3   /* alpha = 3/8 */
-#define RFX_PREDICT_EMA_ALPHA_NUM       3
-#define RFX_PREDICT_VAR_THRESHOLD       15
+#define RFX_PREDICT_EMA_ALPHA_SHIFT     2   /* alpha = 3/8 */
+#define RFX_PREDICT_EMA_ALPHA_NUM       2
+#define RFX_PREDICT_VAR_THRESHOLD       12
 
 /* 3. Jitter Compensation Engine */
-#define RFX_JITTER_UTIL_VAR_THRESHOLD   8
-#define RFX_JITTER_HEADROOM_PCT         15
-#define RFX_JITTER_HIGH_HEADROOM_PCT    10
+#define RFX_JITTER_UTIL_VAR_THRESHOLD   12
+#define RFX_JITTER_HEADROOM_PCT         18
+#define RFX_JITTER_HIGH_HEADROOM_PCT    12
 
 /* 4. Gaming Cluster Sync */
-#define RFX_GAMING_SYNC_DOWN_HOLD_NS    (50000 * NSEC_PER_USEC) /* 50ms */
+#define RFX_GAMING_SYNC_DOWN_HOLD_NS    (80000 * NSEC_PER_USEC) /* 50ms */
 
 /* 5. Adaptive Thermal Gaming - Smooth Ramp */
-#define RFX_THERMAL_RAMP_STEP_PCT       2
-#define RFX_THERMAL_RAMP_WINDOW_NS      (2000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_RAMP_STEP_PCT       1
+#define RFX_THERMAL_RAMP_WINDOW_NS      (3000 * NSEC_PER_MSEC)
 
 /* 6. Micro-Burst Preloader */
-#define RFX_BURST_ANTICIPATION_NS       (12 * NSEC_PER_MSEC)
-#define RFX_BURST_PRELOAD_THRESHOLD_PCT  12
-#define RFX_BURST_PRELOAD_FLOOR_PCT    70
+#define RFX_BURST_ANTICIPATION_NS       (8 * NSEC_PER_MSEC)
+#define RFX_BURST_PRELOAD_THRESHOLD_PCT  10
+#define RFX_BURST_PRELOAD_FLOOR_PCT      75
 
 /* 7. Adaptive PELT Decay Override */
-#define RFX_GAMING_RAMP_MULTIPLIER      125  /* 1.4x */
-#define RFX_GAMING_RAMP_THRESHOLD_PCT   25
+#define RFX_GAMING_RAMP_MULTIPLIER      135  /* 1.4x */
+#define RFX_GAMING_RAMP_THRESHOLD_PCT   20
 
 /* === ADAPTIVE FREQ HELPERS - UNIVERSAL SoC SUPPORT === */
 
