@@ -93,7 +93,7 @@ static unsigned int sched_nr_latency = 8;
  * After fork, child runs first. If set to 0 (default) then
  * parent will (try to) run first.
  */
-unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
+unsigned int sysctl_sched_child_runs_first __read_mostly = 0;
 
 /*
  * SCHED_OTHER wake-up granularity.
@@ -113,7 +113,7 @@ unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
@@ -121,8 +121,8 @@ u8   __read_mostly sched_burst_exclude_kthreads = 1;
 u8   __read_mostly sched_burst_smoothness_long  = 3;
 u8   __read_mostly sched_burst_smoothness_short = 2;
 u8   __read_mostly sched_burst_fork_atavistic   = 3;
-u8   __read_mostly sched_burst_penalty_offset   = 16;
-uint __read_mostly sched_burst_penalty_scale    = 400;
+u8   __read_mostly sched_burst_penalty_offset   = 18;
+uint __read_mostly sched_burst_penalty_scale    = 600;
 uint __read_mostly sched_burst_cache_lifetime   = 100000000;
 #endif // CONFIG_SCHED_BORE
 
