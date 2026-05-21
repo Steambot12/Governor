@@ -2044,7 +2044,7 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
     bool any_heavy = false;
     unsigned int j, next_f;
     unsigned int freq_cap_khz = 0, j_cap;
-    unsigned int j_util_pct;
+    unsigned int j_util_pct = 0;
     struct rfx_cpu *lead;
     unsigned int sgf;
     unsigned int idle_cap;
