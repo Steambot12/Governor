@@ -43,14 +43,14 @@ extern unsigned int sysctl_sched_latency;
 
 /* BIG cluster rate limits */
 #define CPUFREQ_VORPAL_BIG_UP_RATE_LIMIT_US      0
-#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    12000
+#define CPUFREQ_VORPAL_BIG_DOWN_RATE_LIMIT_US    60000
 
 /* Default: Ultra-fast 10us for instant response */
 #define CPUFREQ_VORPAL_DEFAULT_RATE_LIMIT_US        5
 #define CPUFREQ_VORPAL_UP_RATE_LIMIT_US             0
 
 /* BIG: balance between gaming stability and battery */
-#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    12000
+#define CPUFREQ_VORPAL_DOWN_RATE_LIMIT_US    50000
 
 /* LITTLE: AGGRESSIVE IDLE - Fix stuck issue */
 #define CPUFREQ_VORPAL_LITTLE_UP_RATE_LIMIT_US      0
@@ -63,7 +63,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* PRIME: Faster down after gaming for thermal - TUNED */
 #define CPUFREQ_VORPAL_PRIME_UP_RATE_LIMIT_US       0
-#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   12000
+#define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   80000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
 /* === HISPEED / BLEND - THERMAL AWARE === */
@@ -73,7 +73,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* Hispeed: Thermal vs Performance Balance - TUNED */
 #define CPUFREQ_VORPAL_DEFAULT_HISPEED_BOOST_PCT   72
-#define RFX_HISPEED_GAMING_PCT                       80
+#define RFX_HISPEED_GAMING_PCT                       60
 #define RFX_HISPEED_DAILY_PCT                        55
 #define RFX_HISPEED_VIDEO_PCT                        72
 
@@ -86,32 +86,32 @@ extern unsigned int sysctl_sched_latency;
 
 /* === BURST GUARD - GAMING OPTIMIZED === */
 
-#define RFX_BURST_GUARD_NS          (150 * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD    8
+#define RFX_BURST_GUARD_NS          (1000 * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD    4
 
 /* === HEAVY SUSTAIN - THERMAL GAMING === */
 
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   40
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    15
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   25
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT    10
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS         8
+#define RFX_SUSTAIN_EXIT_TICKS        12
 
 /* TUNED: Shorter gaming lock for thermal balance */
-#define RFX_GAMING_LOCK_DURATION_NS   (8000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (30000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming — persentase from max freq hardware */
-#define RFX_GAMING_MAX_PCT              85
-#define RFX_BIG_GAMING_MAX_PCT          83
-#define RFX_PRIME_GAMING_FLOOR_PCT      78
+#define RFX_GAMING_MAX_PCT              80
+#define RFX_BIG_GAMING_MAX_PCT          78
+#define RFX_PRIME_GAMING_FLOOR_PCT      70
 #define RFX_GAME_LAUNCH_FLOOR_PCT       65
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   15
 #define RFX_LITTLE_GAMING_CAP_PCT       75
 
 /* === LIGHT MODE - AGGRESSIVE IDLE === */
 
-#define RFX_LIGHT_ENTER_PCT     2
-#define RFX_LIGHT_ENTER_TICKS   2
+#define RFX_LIGHT_ENTER_PCT     1
+#define RFX_LIGHT_ENTER_TICKS   5
 #define RFX_LIGHT_EXIT_PCT     12
 
 /* === IDLE & DEEPSLEEP - <1% DRAIN TARGET === */
@@ -135,11 +135,11 @@ extern unsigned int sysctl_sched_latency;
 
 /* === TIME-BASED DUTY CYCLE THERMAL === */
 
-#define RFX_THERMAL_WINDOW_NS            (10000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_WINDOW_SHRINK_NS     (8000 * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_BURST_NS    (800  * NSEC_PER_MSEC)
-#define RFX_THERMAL_THROTTLE_CAP_PCT     80
-#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 82
+#define RFX_THERMAL_WINDOW_NS            (60000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_WINDOW_SHRINK_NS     (60000 * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_BURST_NS    (100  * NSEC_PER_MSEC)
+#define RFX_THERMAL_THROTTLE_CAP_PCT     95
+#define RFX_BIG_THERMAL_THROTTLE_CAP_PCT 95
 #define RFX_PRIME_GAMING_SUSTAIN_FLOOR_PCT  75
 
 /* Extended interactive - shorter */
@@ -185,8 +185,8 @@ extern unsigned int sysctl_sched_latency;
 
 /* 3. Jitter Compensation Engine */
 #define RFX_JITTER_UTIL_VAR_THRESHOLD   8
-#define RFX_JITTER_HEADROOM_PCT         12
-#define RFX_JITTER_HIGH_HEADROOM_PCT    8
+#define RFX_JITTER_HEADROOM_PCT         15
+#define RFX_JITTER_HIGH_HEADROOM_PCT    10
 
 /* 4. Gaming Cluster Sync */
 #define RFX_GAMING_SYNC_DOWN_HOLD_NS    (50000 * NSEC_PER_USEC) /* 50ms */
@@ -197,7 +197,7 @@ extern unsigned int sysctl_sched_latency;
 
 /* 6. Micro-Burst Preloader */
 #define RFX_BURST_ANTICIPATION_NS       (12 * NSEC_PER_MSEC)
-#define RFX_BURST_PRELOAD_THRESHOLD_PCT  8
+#define RFX_BURST_PRELOAD_THRESHOLD_PCT  12
 #define RFX_BURST_PRELOAD_FLOOR_PCT    70
 
 /* 7. Adaptive PELT Decay Override */
