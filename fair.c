@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 10000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 10000000ULL;
+unsigned int sysctl_sched_latency			= 6000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 8000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 8000000ULL;
@@ -76,8 +76,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_N
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 1250000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 1250000ULL;
+unsigned int sysctl_sched_min_granularity			= 800000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 800000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_min_granularity			= 3000000ULL;
  static unsigned int normalized_sysctl_sched_min_granularity	= 3000000ULL;
@@ -106,14 +106,14 @@ unsigned int sysctl_sched_child_runs_first __read_mostly = 0;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1500000ULL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1500000ULL;
+unsigned int sysctl_sched_wakeup_granularity			= 1000000ULL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000ULL;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 1000000UL;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
@@ -121,8 +121,8 @@ u8   __read_mostly sched_burst_exclude_kthreads = 1;
 u8   __read_mostly sched_burst_smoothness_long  = 3;
 u8   __read_mostly sched_burst_smoothness_short = 2;
 u8   __read_mostly sched_burst_fork_atavistic   = 3;
-u8   __read_mostly sched_burst_penalty_offset   = 18;
-uint __read_mostly sched_burst_penalty_scale    = 600;
+u8   __read_mostly sched_burst_penalty_offset   = 12;
+uint __read_mostly sched_burst_penalty_scale    = 400;
 uint __read_mostly sched_burst_cache_lifetime   = 100000000;
 #endif // CONFIG_SCHED_BORE
 
