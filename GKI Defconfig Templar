@@ -305,7 +305,10 @@ CONFIG_SCHED_BORE=y
 CONFIG_SCHED_ALT=y
 CONFIG_SCHED_BORE_WAKEUP_PREEMPT=y
 # CONFIG_SCHED_BORE_IDLE_PREEMPT is not set
-							  
+
+# Scheduler CASS
+CONFIG_SCHED_CASS=y
+
 #
 # Kernel Performance Events And Counters
 #
