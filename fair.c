@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/* BEST
+/*
  * Completely Fair Scheduling (CFS) Class (SCHED_NORMAL/SCHED_BATCH)
  *
  *  Copyright (C) 2007 Red Hat, Inc., Ingo Molnar <mingo@redhat.com>
@@ -47,8 +47,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
 unsigned int sysctl_sched_latency			= 6000000ULL;
 static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
 #else // CONFIG_SCHED_BORE
- unsigned int sysctl_sched_latency			= 8000000ULL;
- static unsigned int normalized_sysctl_sched_latency	= 8000000ULL;
+ unsigned int sysctl_sched_latency			= 5000000ULL;
+ static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
 #endif // CONFIG_SCHED_BORE
 EXPORT_SYMBOL_GPL(sysctl_sched_latency);
 
@@ -67,8 +67,9 @@ EXPORT_SYMBOL_GPL(sysctl_sched_latency);
 #ifdef CONFIG_SCHED_BORE
  enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
 #else // CONFIG_SCHED_BORE
-enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
+enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
 #endif // CONFIG_SCHED_BORE
+
 /*
  * Minimal preemption granularity for CPU-bound tasks:
  *
@@ -79,8 +80,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_N
 unsigned int sysctl_sched_min_granularity			= 800000ULL;
 static unsigned int normalized_sysctl_sched_min_granularity	= 800000ULL;
 #else // CONFIG_SCHED_BORE
- unsigned int sysctl_sched_min_granularity			= 3000000ULL;
- static unsigned int normalized_sysctl_sched_min_granularity	= 3000000ULL;
+ unsigned int sysctl_sched_min_granularity			= 750000ULL;
+ static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
 #endif // CONFIG_SCHED_BORE
 EXPORT_SYMBOL_GPL(sysctl_sched_min_granularity);
 
@@ -93,7 +94,7 @@ static unsigned int sched_nr_latency = 8;
  * After fork, child runs first. If set to 0 (default) then
  * parent will (try to) run first.
  */
-unsigned int sysctl_sched_child_runs_first __read_mostly = 0;
+unsigned int sysctl_sched_child_runs_first __read_mostly;
 
 /*
  * SCHED_OTHER wake-up granularity.
@@ -106,24 +107,24 @@ unsigned int sysctl_sched_child_runs_first __read_mostly = 0;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1000000ULL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000ULL;
+unsigned int sysctl_sched_wakeup_granularity			= 500000UL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 500000UL;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 1000000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 3;
-u8   __read_mostly sched_burst_smoothness_short = 2;
-u8   __read_mostly sched_burst_fork_atavistic   = 3;
-u8   __read_mostly sched_burst_penalty_offset   = 12;
-uint __read_mostly sched_burst_penalty_scale    = 400;
-uint __read_mostly sched_burst_cache_lifetime   = 100000000;
+u8   __read_mostly sched_burst_smoothness_long  = 1;
+u8   __read_mostly sched_burst_smoothness_short = 0;
+u8   __read_mostly sched_burst_fork_atavistic   = 1;
+u8   __read_mostly sched_burst_penalty_offset   = 18;
+uint __read_mostly sched_burst_penalty_scale    = 720;
+uint __read_mostly sched_burst_cache_lifetime   = 50000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
