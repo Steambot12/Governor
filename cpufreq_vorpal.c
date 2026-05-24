@@ -58,13 +58,13 @@ static unsigned int rfx_global_gaming_mode;
 #define RFX_LITTLE_DOWN_LIGHT_US       50
 
 /* === GAMING SUSTAINED FLOOR === */
-#define RFX_GAMING_FLOOR_PRIME_PCT      82
-#define RFX_GAMING_FLOOR_BIG_PCT        76
-#define RFX_GAMING_FLOOR_LITTLE_PCT     58
+#define RFX_GAMING_FLOOR_PRIME_PCT      85
+#define RFX_GAMING_FLOOR_BIG_PCT        78
+#define RFX_GAMING_FLOOR_LITTLE_PCT     62
 
 /* GAMING RATE LIMITS */
 #define RFX_GAMING_UP_RATE_LIMIT_US     0
-#define RFX_GAMING_DOWN_RATE_LIMIT_US   16000
+#define RFX_GAMING_DOWN_RATE_LIMIT_US   12000
 
 /* === HISPEED / STATIC BOOST === */
 #define CPUFREQ_VORPAL_DEFAULT_HISPEED_WINDOW_US    30
@@ -83,17 +83,17 @@ static unsigned int rfx_global_gaming_mode;
 
 /* === HEAVY SUSTAIN === */
 #define RFX_SUSTAIN_HEAVY_ENTER_PCT   35
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    20
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT    15
 #define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
 #define RFX_SUSTAIN_HEAVY_TICKS        1
-#define RFX_SUSTAIN_EXIT_TICKS         8
+#define RFX_SUSTAIN_EXIT_TICKS        10
 #define RFX_GAMING_LOCK_DURATION_NS   (18000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming */
 #define RFX_GAMING_MAX_PCT              92
 #define RFX_BIG_GAMING_MAX_PCT          92
-#define RFX_PRIME_GAMING_FLOOR_PCT      84
+#define RFX_PRIME_GAMING_FLOOR_PCT      87
 #define RFX_GAME_LAUNCH_FLOOR_PCT       72
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   22
 #define RFX_LITTLE_GAMING_CAP_PCT       82
@@ -117,7 +117,7 @@ static unsigned int rfx_global_gaming_mode;
 
 /* === SIMPLE THERMAL CAP === */
 #define RFX_THERMAL_SOFT_CAP_PCT        86
-#define RFX_THERMAL_HARD_CAP_PCT        90
+#define RFX_THERMAL_HARD_CAP_PCT        92
 #define RFX_THERMAL_GRADUAL_STEP_NS   (4000 * NSEC_PER_MSEC)
 
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -142,7 +142,7 @@ static unsigned int rfx_global_gaming_mode;
 #define RFX_LITTLE_MED_MAX_FREQ_KHZ     800000
 
 /* === EMA SMOOTHING === */
-#define RFX_EMA_ALPHA_SHIFT 3
+#define RFX_EMA_ALPHA_SHIFT 2
 
 /* === ADAPTIVE FREQ HELPERS === */
 static inline unsigned int rfx_adaptive_max(struct cpufreq_policy *policy,
@@ -375,13 +375,19 @@ static void rfx_propagate_gaming_mode(unsigned int val)
 			if (!val) {
 				rfx_reset_transient_state(rfx_pol, ktime_get_ns());
 			} else {
-				rfx_pol->tunables->gaming_mode = 1;
-				rfx_pol->current_mode = RFX_MODE_GAMING;
-				rfx_pol->in_light_mode = false;
-				rfx_pol->force_idle = false;
-				rfx_pol->need_freq_update = true;
-				rfx_pol->mode_switch_time_ns = ktime_get_ns();
-			}
+				u64 now = ktime_get_ns();
+                rfx_pol->tunables->gaming_mode = 1;
+                rfx_pol->current_mode          = RFX_MODE_GAMING;
+                rfx_pol->in_heavy_mode         = true;
+                rfx_pol->in_light_mode         = false;
+                rfx_pol->force_idle            = false;
+                rfx_pol->in_deep_idle          = false;
+                rfx_pol->gaming_lock_end_ns    = now + RFX_GAMING_LOCK_DURATION_NS;
+                rfx_pol->need_freq_update      = true;
+                rfx_pol->mode_switch_time_ns   = now;
+                rfx_pol->light_enter_ticks     = 0;
+                rfx_pol->sustain_exit_ticks    = 0;
+            }
 		}
 
 		cpufreq_cpu_put(policy);
@@ -1553,8 +1559,8 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
 		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
 		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-		bool rising = (h1 > h2) && (h2 > h3) && (h1 >= 28);
-		bool sudden_spike = (h1 >= 36) && (h2 <= 24) && (h1 >= h2 + 12);
+		bool rising = (h1 > h2) && (h2 > h3) && (h1 >= 22);
+		bool sudden_spike = (h1 >= 32) && (h2 <= 26) && (h1 >= h2 + 10);
 		bool sustained_heavy = (h1 >= 42) && (h2 >= 38) && (h3 >= 34);
 		bool wuwa_anim = (h1 >= 30) && (h3 >= 28) && (h2 <= 20);
 
@@ -2073,11 +2079,11 @@ static ssize_t hispeed_boost_pct_store(struct gov_attr_set *attr_set,
 static struct governor_attr hispeed_boost_pct =
 	__ATTR(hispeed_boost_pct, 0644,
 	       hispeed_boost_pct_show, hispeed_boost_pct_store);
-           
+
 /* === GLOBAL GAMING MODE - ONLY VIA PRIME SYSFS === */
 static ssize_t gaming_mode_show(struct gov_attr_set *attr_set, char *buf)
 {
-	return sprintf(buf, "%u\\n", rfx_global_gaming_mode);
+    return sysfs_emit(buf, "%u\n", rfx_global_gaming_mode);
 }
 static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 				 const char *buf, size_t count)
