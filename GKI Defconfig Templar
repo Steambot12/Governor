@@ -307,7 +307,7 @@ CONFIG_SCHED_BORE_WAKEUP_PREEMPT=y
 # CONFIG_SCHED_BORE_IDLE_PREEMPT is not set
 
 # Scheduler CASS
-CONFIG_SCHED_CASS=y
+# CONFIG_SCHED_CASS is not set
 
 #
 # Kernel Performance Events And Counters
@@ -567,7 +567,7 @@ CONFIG_RELOCATABLE=y
 CONFIG_RANDOMIZE_BASE=y
 # CONFIG_RANDOMIZE_MODULE_REGION_FULL is not set
 # CONFIG_STACKPROTECTOR_PER_TASK is not set
-CONFIG_CMDLINE="stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 transparent_hugepage=always rcu_nocbs=0-7 rcu_nocb_poll rcupdate.rcu_lazy_ms=100 rcupdate.rcu_idle_gp_delay=1 cpuidle.off=0 cpuidle.governor=teo cpuidle.promotion=10 cpuidle.demotion=15 thermal.off=0 thermal_step_size=1 thermal.polling_delay=1000 thermal_pressure=1 nohz=on nohz_full=4-7 timer_migration=0 sched_bore=1 sched_util_clamp_min_rt_default=512 sched_util_clamp_min_dl_default=512 workqueue.power_efficient=0 pm_async_timeout=30000"
+CONFIG_CMDLINE="stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cgroup.memory=nokmem noirqdebug audit=0 loglevel=3 transparent_hugepage=always rcu_nocbs=0-7 rcu_nocb_poll rcupdate.rcu_lazy_ms=100 rcupdate.rcu_idle_gp_delay=1 cpuidle.off=0 cpuidle.promotion=10 cpuidle.demotion=15 thermal.off=0 thermal_step_size=1 thermal.polling_delay=1000 thermal_pressure=1 nohz=on nohz_full=4-7 timer_migration=0 sched_bore=1 sched_util_clamp_min_rt_default=128 sched_util_clamp_min_dl_default=128 workqueue.power_efficient=0 pm_async_timeout=30000"
 # end of Kernel Features
 
 #
@@ -575,8 +575,6 @@ CONFIG_CMDLINE="stack_depot_disable=on kasan.stacktrace=off kvm-arm.mode=none cg
 #
 # CONFIG_CMDLINE_FROM_BOOTLOADER is not set
 CONFIG_CMDLINE_EXTEND=y
-CONFIG_CMDLINE_OVERRIDE=y
-CONFIG_CMDLINE_BOOL=y
 # CONFIG_CMDLINE_FORCE is not set
 CONFIG_EFI_STUB=y
 CONFIG_EFI=y
@@ -3213,7 +3211,7 @@ CONFIG_THERMAL_DEFAULT_GOV_STEP_WISE=y
 # CONFIG_THERMAL_DEFAULT_GOV_FAIR_SHARE is not set
 # CONFIG_THERMAL_DEFAULT_GOV_USER_SPACE is not set
 # CONFIG_THERMAL_DEFAULT_GOV_POWER_ALLOCATOR is not set
-CONFIG_THERMAL_GOV_FAIR_SHARE=y
+# CONFIG_THERMAL_GOV_FAIR_SHARE is not set
 # CONFIG_THERMAL_GOV_BANG_BANG is not set
 CONFIG_THERMAL_GOV_USER_SPACE=y
 CONFIG_THERMAL_GOV_POWER_ALLOCATOR=y
