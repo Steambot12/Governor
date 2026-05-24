@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 6000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 6000000ULL;
+unsigned int sysctl_sched_latency			= 8000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 8000000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 5000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
@@ -77,8 +77,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 800000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 800000ULL;
+unsigned int sysctl_sched_min_granularity			= 1200000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 1200000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_min_granularity			= 750000ULL;
  static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
@@ -107,8 +107,8 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 500000UL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 500000UL;
+unsigned int sysctl_sched_wakeup_granularity			= 750000UL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 750000UL;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
@@ -123,8 +123,8 @@ u8   __read_mostly sched_burst_smoothness_long  = 1;
 u8   __read_mostly sched_burst_smoothness_short = 0;
 u8   __read_mostly sched_burst_fork_atavistic   = 1;
 u8   __read_mostly sched_burst_penalty_offset   = 18;
-uint __read_mostly sched_burst_penalty_scale    = 720;
-uint __read_mostly sched_burst_cache_lifetime   = 50000000;
+uint __read_mostly sched_burst_penalty_scale    = 512;
+uint __read_mostly sched_burst_cache_lifetime   = 100000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
