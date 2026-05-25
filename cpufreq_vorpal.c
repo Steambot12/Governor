@@ -290,6 +290,9 @@ struct rfx_policy {
     bool                  frame_boost_active;
     u64                   frame_boost_end_ns;
 
+	bool                  burst_boost_active;
+    u64                   burst_boost_end_ns;
+
     unsigned int          ema_last_freq;
     u64                   ema_last_update_ns;
     unsigned int          thermal_cap_pct;
@@ -361,6 +364,8 @@ static inline void rfx_reset_transient_state(struct rfx_policy *rfx_pol, u64 now
 	rfx_pol->render_boost_end_ns = 0;
 	rfx_pol->frame_boost_active = false;
     rfx_pol->frame_boost_end_ns = 0;
+	rfx_pol->burst_boost_active = false;
+    rfx_pol->burst_boost_end_ns = 0;
 	rfx_pol->ema_last_freq = 0;
 	rfx_pol->ema_last_update_ns = 0;
 	rfx_pol->thermal_cap_pct = RFX_THERMAL_SOFT_CAP_PCT;
@@ -1089,20 +1094,41 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     	rfx_pol->frame_boost_active &&
     	rfx_pol->frame_boost_end_ns &&
     	time < rfx_pol->frame_boost_end_ns) {
-
     	unsigned int fpct;
 
     	if (is_prime)
-        	fpct = 80;   /* sekitar 80% max */
+        	fpct = 80;
     	else if (!is_little && !is_prime)
-        	fpct = 72;   /* BIG */
+        	fpct = 72;
     	else
-        	fpct = 0;   /* LITTLE */
+        	fpct = 60;
 
     	if (fpct > 0) {
         	unsigned int ff = rfx_adaptive_floor(policy, fpct);
         	if (freq < ff)
             	freq = ff;
+    	}
+	}
+
+	/* Burst render boost: lebih tinggi, tapi extra-singkat */
+	if (rfx_global_gaming_mode &&
+    	rfx_pol->burst_boost_active &&
+    	rfx_pol->burst_boost_end_ns &&
+    	time < rfx_pol->burst_boost_end_ns) {
+
+    	unsigned int bpct;
+
+    	if (is_prime)
+        	bpct = 88;      /* dekat max tapi tidak 100% */
+    	else if (!is_little && !is_prime)
+        	bpct = 80;
+    	else
+        	bpct = 0;       /* LITTLE tidak perlu burst */
+
+    	if (bpct > 0) {
+        	unsigned int bf = rfx_adaptive_floor(policy, bpct);
+        	if (freq < bf)
+            	freq = bf;
     	}
 	}
 
@@ -1225,34 +1251,35 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 	}
 
 	if (is_big) {
-		heavy_cond = util_pct >= RFX_SUSTAIN_HEAVY_ENTER_PCT ||
-			     rfx_c->filtered_busy_pct >= RFX_SUSTAIN_HEAVY_BUSY_PCT ||
-			     rfx_c->busy_pct >= 18;
+		    heavy_cond = util_pct >= 55 ||
+                 rfx_c->filtered_busy_pct >= RFX_SUSTAIN_HEAVY_BUSY_PCT ||
+                 rfx_c->busy_pct >= 25;
 
-		if (!rfx_pol->in_heavy_mode) {
-			if (heavy_cond) {
-				rfx_pol->sustain_heavy_ticks++;
-				if (rfx_pol->sustain_heavy_ticks >=
-				    RFX_SUSTAIN_HEAVY_TICKS) {
-					rfx_pol->in_heavy_mode = true;
-					rfx_pol->in_light_mode = false;
-					rfx_pol->force_idle = false;
-					rfx_pol->interactive_end_ns = 0;
-					rfx_pol->sustain_heavy_ticks = 0;
-					rfx_pol->sustain_exit_ticks = 0;
-					rfx_pol->light_enter_ticks = 0;
+    if (!rfx_pol->in_heavy_mode) {
+        if (heavy_cond) {
+            rfx_pol->sustain_heavy_ticks++;
+            if (rfx_pol->sustain_heavy_ticks >=
+                RFX_SUSTAIN_HEAVY_TICKS) {
+                rfx_pol->in_heavy_mode        = true;
+                rfx_pol->in_light_mode        = false;
+                rfx_pol->force_idle           = false;
+                rfx_pol->interactive_end_ns   = 0;
+                rfx_pol->sustain_heavy_ticks  = 0;
+                rfx_pol->sustain_exit_ticks   = 0;
+                rfx_pol->light_enter_ticks    = 0;
 
-					if (is_prime) {
-						rfx_pol->prime_gaming_floor_active = true;
-						rfx_pol->prime_gaming_floor_end_ns = 0;
-					}
+                if (is_prime) {
+                    rfx_pol->prime_gaming_floor_active = true;
+                    rfx_pol->prime_gaming_floor_end_ns = 0;
+                }
 
-					rfx_pol->gaming_lock_end_ns =
-						time + RFX_GAMING_LOCK_DURATION_NS;
-				}
-			} else {
-				rfx_pol->sustain_heavy_ticks = 0;
-			}
+                /* crowd fight lock: 250ms, bukan 14s */
+                rfx_pol->gaming_lock_end_ns =
+                    time + 250 * NSEC_PER_MSEC;
+            }
+        } else {
+            rfx_pol->sustain_heavy_ticks = 0;
+        }
 		} else if (util_pct < RFX_SUSTAIN_HEAVY_EXIT_PCT) {
 			rfx_pol->sustain_exit_ticks++;
 			if (rfx_pol->sustain_exit_ticks >= RFX_SUSTAIN_EXIT_TICKS) {
@@ -1708,6 +1735,17 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
     bool sudden_spike    = (h1 >= 60) && (h2 <= 32) && (h1 >= h2 + 18);
     bool sustained_heavy = (h1 >= 55) && (h2 >= 50) && (h3 >= 45);
     bool ultra_spike     = (h1 >= 68) && (h2 <= 38);
+	bool burst_up 		 = (h1 >= 70 && h2 <= 40 && h3 <= 35) || (h1 >= 80 && h1 >= h2 + 20);
+
+    if (burst_up && !rfx_pol->burst_boost_active) {
+        	rfx_pol->burst_boost_active = true;
+        	rfx_pol->burst_boost_end_ns = time + 20 * NSEC_PER_MSEC;
+    	} else if (rfx_pol->burst_boost_active &&
+               		time >= rfx_pol->burst_boost_end_ns) {
+        	rfx_pol->burst_boost_active = false;
+        	rfx_pol->burst_boost_end_ns = 0;
+    	}
+	}
 
     if (rising || sudden_spike || sustained_heavy || ultra_spike) {
         u64 lock_add, boost_dur;
