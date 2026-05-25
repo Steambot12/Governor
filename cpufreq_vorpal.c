@@ -53,8 +53,8 @@ static unsigned int rfx_global_gaming_mode;
 #define CPUFREQ_VORPAL_PRIME_DOWN_RATE_LIMIT_US   8000
 #define CPUFREQ_VORPAL_PRIME_RATE_LIMIT_US          1
 
-#define RFX_LITTLE_DOWN_HEAVY_US    20000
-#define RFX_LITTLE_DOWN_MEDIUM_US    4000
+#define RFX_LITTLE_DOWN_HEAVY_US    15000
+#define RFX_LITTLE_DOWN_MEDIUM_US    6000
 #define RFX_LITTLE_DOWN_LIGHT_US       50
 
 /* === GAMING SUSTAINED FLOOR === */
@@ -64,12 +64,12 @@ static unsigned int rfx_global_gaming_mode;
 
 /* GAMING RATE LIMITS */
 #define RFX_GAMING_UP_RATE_LIMIT_US     0
-#define RFX_GAMING_DOWN_RATE_LIMIT_US   12000
+#define RFX_GAMING_DOWN_RATE_LIMIT_US   9000
 
 /* === FULL GAMING MODE ADJUSTMENTS === */
-#define RFX_GLOB_GAMING_FLOOR_LITTLE_PCT   80
-#define RFX_GLOB_GAMING_FLOOR_BIG_PCT      85
-#define RFX_GLOB_GAMING_FLOOR_PRIME_PCT    90
+#define RFX_GLOB_GAMING_FLOOR_LITTLE_PCT   72
+#define RFX_GLOB_GAMING_FLOOR_BIG_PCT      80
+#define RFX_GLOB_GAMING_FLOOR_PRIME_PCT    88
 #define RFX_LITTLE_GLOB_GAMING_CAP_PCT     100
 #define RFX_GLOB_GAMING_THERMAL_CAP_PCT    100
 
@@ -766,11 +766,11 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
 	if (mode == RFX_MODE_GAMING) {
 		if (is_prime)
-			headroom_pct = is_heavy ? 28 : 20;
+			headroom_pct = is_heavy ? 22 : 16;
 		else if (max_cap > RFX_LITTLE_CAP_THRESHOLD)
-			headroom_pct = is_heavy ? 24 : 18;
+			headroom_pct = is_heavy ? 16 : 10;
 		else
-			headroom_pct = is_heavy ? 14 : 8;
+			headroom_pct = is_heavy ? 10 : 6;
 
 		return min(util + util * headroom_pct / 100, max_cap);
 	}
@@ -973,8 +973,8 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
             	floor_pct = RFX_GAMING_FLOOR_BIG_PCT;
     	}
 
-    if (freq < rfx_adaptive_floor(policy, floor_pct))
-        freq = rfx_adaptive_floor(policy, floor_pct);
+    	if (freq < rfx_adaptive_floor(policy, floor_pct))
+        	freq = rfx_adaptive_floor(policy, floor_pct);
 	}
 
 	if (is_little && !rfx_pol->in_heavy_mode &&
@@ -1595,13 +1595,13 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 			rfx_pol->in_heavy_mode = true;
 			rfx_pol->gaming_lock_end_ns = time +
 				(sudden_spike || wuwa_anim ?
-				 (900 * NSEC_PER_MSEC) :
-				 (600 * NSEC_PER_MSEC));
+				 (420 * NSEC_PER_MSEC) :
+				 (280 * NSEC_PER_MSEC));
 			rfx_pol->render_urgency_active = true;
 			rfx_pol->render_boost_end_ns = time +
 				(sudden_spike || wuwa_anim ?
-				 (220 * NSEC_PER_MSEC) :
-				 (120 * NSEC_PER_MSEC));
+				 (140 * NSEC_PER_MSEC) :
+				 (90 * NSEC_PER_MSEC));
 		}
 	}
 
