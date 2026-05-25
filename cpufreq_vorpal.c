@@ -89,12 +89,12 @@ static unsigned int rfx_global_gaming_mode;
 #define RFX_BURST_DROP_THRESHOLD                  16
 
 /* === HEAVY SUSTAIN === */
-#define RFX_SUSTAIN_HEAVY_ENTER_PCT   35
-#define RFX_SUSTAIN_HEAVY_EXIT_PCT    15
-#define RFX_SUSTAIN_HEAVY_BUSY_PCT     8
+#define RFX_SUSTAIN_HEAVY_ENTER_PCT   38
+#define RFX_SUSTAIN_HEAVY_EXIT_PCT    18
+#define RFX_SUSTAIN_HEAVY_BUSY_PCT    10
 #define RFX_SUSTAIN_HEAVY_TICKS        1
 #define RFX_SUSTAIN_EXIT_TICKS        10
-#define RFX_GAMING_LOCK_DURATION_NS   (18000 * NSEC_PER_MSEC)
+#define RFX_GAMING_LOCK_DURATION_NS   (14000 * NSEC_PER_MSEC)
 #define RFX_GAMING_TUNABLE_SUSTAIN_NS  (20000 * NSEC_PER_MSEC)
 
 /* Adaptive Gaming */
@@ -124,7 +124,7 @@ static unsigned int rfx_global_gaming_mode;
 
 /* === SIMPLE THERMAL CAP === */
 #define RFX_THERMAL_SOFT_CAP_PCT        86
-#define RFX_THERMAL_HARD_CAP_PCT        92
+#define RFX_THERMAL_HARD_CAP_PCT        95
 #define RFX_THERMAL_GRADUAL_STEP_NS   (4000 * NSEC_PER_MSEC)
 
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -1061,12 +1061,12 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     	time < rfx_pol->render_boost_end_ns) {
     	if (is_prime) {
         	unsigned int ru_floor =
-            	rfx_adaptive_floor(policy, 92);
+            	rfx_adaptive_floor(policy, 90);
         	if (freq < ru_floor)
             	freq = ru_floor;
     	} else if (!is_little && !is_prime) {
         	unsigned int ru_floor =
-            	rfx_adaptive_floor(policy, 80);
+            	rfx_adaptive_floor(policy, 82);
         	if (freq < ru_floor)
             	freq = ru_floor;
     	}
@@ -1634,17 +1634,17 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
     bool rising          = (h1 > h2 + 6) && (h2 > h3 + 6) && (h1 >= 40);
     bool sudden_spike    = (h1 >= 60) && (h2 <= 32) && (h1 >= h2 + 18);
     bool sustained_heavy = (h1 >= 55) && (h2 >= 50) && (h3 >= 45);
-	bool ultra_spike     = (h1 >= 72) && (h2 <= 40);
+	bool ultra_spike     = (h1 >= 68) && (h2 <= 38);
 
     if (rising || sudden_spike || sustained_heavy || ultra_spike) {
         u64 lock_add, boost_dur;
 
         if (ultra_spike) {
-            lock_add  = 160 * NSEC_PER_MSEC;
-            boost_dur =  60 * NSEC_PER_MSEC;
+            lock_add  = 140 * NSEC_PER_MSEC;
+            boost_dur =  50 * NSEC_PER_MSEC;
         } else {
-            lock_add  = rising ? 220 * NSEC_PER_MSEC : 300 * NSEC_PER_MSEC;
-            boost_dur = rising ?  80 * NSEC_PER_MSEC : 120 * NSEC_PER_MSEC;
+            lock_add  = rising ? 180 * NSEC_PER_MSEC : 240 * NSEC_PER_MSEC;
+            boost_dur = rising ?  70 * NSEC_PER_MSEC : 100 * NSEC_PER_MSEC;
         }
 
         /* extend lock, jangan reset penuh tiap frame */
