@@ -85,8 +85,8 @@ static unsigned int rfx_global_gaming_mode;
 #define IOWAIT_BOOST_MIN    (SCHED_CAPACITY_SCALE / 8)
 
 /* === BURST GUARD - SIMPLIFIED === */
-#define RFX_BURST_GUARD_NS    (400 * NSEC_PER_MSEC)
-#define RFX_BURST_DROP_THRESHOLD                  12
+#define RFX_BURST_GUARD_NS    (300 * NSEC_PER_MSEC)
+#define RFX_BURST_DROP_THRESHOLD                  16
 
 /* === HEAVY SUSTAIN === */
 #define RFX_SUSTAIN_HEAVY_ENTER_PCT   35
@@ -766,7 +766,7 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
 	if (mode == RFX_MODE_GAMING) {
 		if (is_prime)
-			headroom_pct = is_heavy ? 22 : 16;
+			headroom_pct = is_heavy ? 18 : 14;
 		else if (max_cap > RFX_LITTLE_CAP_THRESHOLD)
 			headroom_pct = is_heavy ? 16 : 10;
 		else
@@ -1056,21 +1056,21 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
     /* Render urgency: hanya nambah sedikit di atas floor */
     if (rfx_global_gaming_mode &&
-        rfx_pol->render_urgency_active &&
-        rfx_pol->render_boost_end_ns &&
-        time < rfx_pol->render_boost_end_ns) {
-        if (is_prime) {
-            unsigned int ru_floor =
-                rfx_adaptive_floor(policy, 85);
-            if (freq < ru_floor)
-                freq = ru_floor;
-        } else if (!is_little && !is_prime) {
-            unsigned int ru_floor =
-                rfx_adaptive_floor(policy, 78);
-            if (freq < ru_floor)
-                freq = ru_floor;
-        }
-    }
+    	rfx_pol->render_urgency_active &&
+    	rfx_pol->render_boost_end_ns &&
+    	time < rfx_pol->render_boost_end_ns) {
+    	if (is_prime) {
+        	unsigned int ru_floor =
+            	rfx_adaptive_floor(policy, 92);
+        	if (freq < ru_floor)
+            	freq = ru_floor;
+    	} else if (!is_little && !is_prime) {
+        	unsigned int ru_floor =
+            	rfx_adaptive_floor(policy, 80);
+        	if (freq < ru_floor)
+            	freq = ru_floor;
+    	}
+	}
 
     /* Soft‑exit heavy di non‑gaming big/prime */
     if (rfx_pol->in_heavy_mode &&
@@ -1634,12 +1634,20 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
     bool rising          = (h1 > h2 + 6) && (h2 > h3 + 6) && (h1 >= 40);
     bool sudden_spike    = (h1 >= 60) && (h2 <= 32) && (h1 >= h2 + 18);
     bool sustained_heavy = (h1 >= 55) && (h2 >= 50) && (h3 >= 45);
+	bool ultra_spike     = (h1 >= 72) && (h2 <= 40);
 
-    if (rising || sudden_spike || sustained_heavy) {
-        u64 lock_add  = rising ? 220 * NSEC_PER_MSEC : 300 * NSEC_PER_MSEC;
-        u64 boost_dur = rising ?  80 * NSEC_PER_MSEC : 120 * NSEC_PER_MSEC;
+    if (rising || sudden_spike || sustained_heavy || ultra_spike) {
+        u64 lock_add, boost_dur;
 
-        /* Jangan reset lock tiap frame: extend sedikit jika sudah aktif */
+        if (ultra_spike) {
+            lock_add  = 160 * NSEC_PER_MSEC;
+            boost_dur =  60 * NSEC_PER_MSEC;
+        } else {
+            lock_add  = rising ? 220 * NSEC_PER_MSEC : 300 * NSEC_PER_MSEC;
+            boost_dur = rising ?  80 * NSEC_PER_MSEC : 120 * NSEC_PER_MSEC;
+        }
+
+        /* extend lock, jangan reset penuh tiap frame */
         if (!rfx_pol->gaming_lock_end_ns || time > rfx_pol->gaming_lock_end_ns)
             rfx_pol->gaming_lock_end_ns = time + lock_add;
         else
