@@ -908,29 +908,33 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
 
 /* === EMA SMOOTHING === */
 static unsigned int rfx_ema_smooth(struct rfx_policy *rfx_pol,
-				   unsigned int raw_freq, u64 time)
+                                   unsigned int raw_freq, u64 time)
 {
-	unsigned int ema;
-	u64 delta;
+    unsigned int ema;
+    u64 delta;
 
-	if (!rfx_pol->ema_last_freq) {
-		rfx_pol->ema_last_freq = raw_freq;
-		rfx_pol->ema_last_update_ns = time;
-		return raw_freq;
-	}
+    if (!rfx_pol->ema_last_freq) {
+        rfx_pol->ema_last_freq = raw_freq;
+        rfx_pol->ema_last_update_ns = time;
+        return raw_freq;
+    }
 
-	delta = time - rfx_pol->ema_last_update_ns;
-	if (delta > (50 * NSEC_PER_MSEC)) {
-		rfx_pol->ema_last_freq = raw_freq;
-		rfx_pol->ema_last_update_ns = time;
-		return raw_freq;
-	}
+    delta = time - rfx_pol->ema_last_update_ns;
+    if (delta > (80 * NSEC_PER_MSEC)) {
+        rfx_pol->ema_last_freq = raw_freq;
+        rfx_pol->ema_last_update_ns = time;
+        return raw_freq;
+    }
 
-	ema = (raw_freq + (rfx_pol->ema_last_freq << 3) - rfx_pol->ema_last_freq) >> 3;
-	rfx_pol->ema_last_freq = ema;
-	rfx_pol->ema_last_update_ns = time;
+    if (rfx_global_gaming_mode) {
+        ema = (raw_freq + (rfx_pol->ema_last_freq * 9)) / 10;
+    } else {
+        ema = (raw_freq + (rfx_pol->ema_last_freq << 3) - rfx_pol->ema_last_freq) >> 3;
+    }
 
-	return ema;
+    rfx_pol->ema_last_freq = ema;
+    rfx_pol->ema_last_update_ns = time;
+    return ema;
 }
 
 static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
@@ -1379,7 +1383,12 @@ static unsigned long rfx_static_boost(struct rfx_cpu *rfx_c,
 		return pelt_util;
 	}
 
-	effective_pct = min(rfx_c->filtered_busy_pct, hispeed_boost_pct);
+	if (rfx_global_gaming_mode) {
+    	unsigned int cap_pct = min(hispeed_boost_pct, 65U);
+    	effective_pct = min(rfx_c->filtered_busy_pct, cap_pct);
+	} else {
+    	effective_pct = min(rfx_c->filtered_busy_pct, hispeed_boost_pct);
+	}
 	hispeed_util  = max_cap * effective_pct / 100;
 
 	if (hispeed_util <= pelt_util)
@@ -1586,22 +1595,22 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 		unsigned int h1 = rfx_c->util_history[(h - 1) & 7];
 		unsigned int h2 = rfx_c->util_history[(h - 2) & 7];
 		unsigned int h3 = rfx_c->util_history[(h - 3) & 7];
-		bool rising = (h1 > h2) && (h2 > h3) && (h1 >= 22);
-		bool sudden_spike = (h1 >= 32) && (h2 <= 26) && (h1 >= h2 + 10);
-		bool sustained_heavy = (h1 >= 42) && (h2 >= 38) && (h3 >= 34);
-		bool wuwa_anim = (h1 >= 30) && (h3 >= 28) && (h2 <= 20);
+		bool rising = (h1 > h2 + 3) && (h2 > h3 + 3) && (h1 >= 32);
+		bool sudden_spike = (h1 >= 40) && (h2 <= 26) && (h1 >= h2 + 14);
+		bool sustained_heavy = (h1 >= 48) && (h2 >= 42) && (h3 >= 38);
+		bool wuwa_anim = (h1 >= 36) && (h3 >= 32) && (h2 <= 24);
 
 		if (rising || sudden_spike || sustained_heavy || wuwa_anim) {
 			rfx_pol->in_heavy_mode = true;
 			rfx_pol->gaming_lock_end_ns = time +
 				(sudden_spike || wuwa_anim ?
-				 (420 * NSEC_PER_MSEC) :
-				 (280 * NSEC_PER_MSEC));
+				 (320 * NSEC_PER_MSEC) :
+				 (220 * NSEC_PER_MSEC));
 			rfx_pol->render_urgency_active = true;
 			rfx_pol->render_boost_end_ns = time +
 				(sudden_spike || wuwa_anim ?
-				 (140 * NSEC_PER_MSEC) :
-				 (90 * NSEC_PER_MSEC));
+				 (110 * NSEC_PER_MSEC) :
+				 (80 * NSEC_PER_MSEC));
 		}
 	}
 
