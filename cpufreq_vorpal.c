@@ -124,7 +124,7 @@ static unsigned int rfx_global_gaming_mode;
 
 /* === SIMPLE THERMAL CAP === */
 #define RFX_THERMAL_SOFT_CAP_PCT        86
-#define RFX_THERMAL_HARD_CAP_PCT        95
+#define RFX_THERMAL_HARD_CAP_PCT        90
 #define RFX_THERMAL_GRADUAL_STEP_NS   (4000 * NSEC_PER_MSEC)
 
 #define RFX_INTERACTIVE_DURATION_NS  (3000 * NSEC_PER_MSEC)
@@ -390,18 +390,18 @@ static void rfx_propagate_gaming_mode(unsigned int val)
 				rfx_reset_transient_state(rfx_pol, ktime_get_ns());
 			} else {
 				u64 now = ktime_get_ns();
-                rfx_pol->tunables->gaming_mode = 1;
-                rfx_pol->current_mode          = RFX_MODE_GAMING;
-                rfx_pol->in_heavy_mode         = true;
-                rfx_pol->in_light_mode         = false;
-                rfx_pol->force_idle            = false;
-                rfx_pol->in_deep_idle          = false;
-                rfx_pol->gaming_lock_end_ns    = now + RFX_GAMING_LOCK_DURATION_NS;
-                rfx_pol->need_freq_update      = true;
-                rfx_pol->mode_switch_time_ns   = now;
-                rfx_pol->light_enter_ticks     = 0;
-                rfx_pol->sustain_exit_ticks    = 0;
-            }
+            	rfx_pol->tunables->gaming_mode = 1;
+            	rfx_pol->current_mode          = RFX_MODE_GAMING;
+            	rfx_pol->in_heavy_mode         = false;
+            	rfx_pol->in_light_mode         = false;
+            	rfx_pol->force_idle            = false;
+            	rfx_pol->in_deep_idle          = false;
+            	rfx_pol->gaming_lock_end_ns    = now + 400 * NSEC_PER_MSEC;
+            	rfx_pol->need_freq_update      = true;
+            	rfx_pol->mode_switch_time_ns   = now;
+           		rfx_pol->light_enter_ticks     = 0;
+            	rfx_pol->sustain_exit_ticks    = 0;
+        	}
 		}
 
 		cpufreq_cpu_put(policy);
@@ -439,34 +439,34 @@ static void rfx_detect_mode(struct rfx_policy *rfx_pol, struct rfx_cpu *rfx_c,
 			periodic_pattern = true;
 	}
 
-	if (rfx_global_gaming_mode) {
-		rfx_pol->current_mode = RFX_MODE_GAMING;
-		rfx_pol->in_light_mode = false;
-		rfx_pol->force_idle = false;
-		rfx_pol->sustain_exit_ticks = 0;
+	    if (rfx_global_gaming_mode) {
+        rfx_pol->current_mode      = RFX_MODE_GAMING;
+        rfx_pol->in_light_mode     = false;
+        rfx_pol->force_idle        = false;
+        rfx_pol->sustain_exit_ticks = 0;
 
-		if (util_pct >= 4) {
-			rfx_pol->in_heavy_mode = true;
-			rfx_pol->gaming_lock_end_ns = time + RFX_GAMING_LOCK_DURATION_NS;
-		} else if (rfx_pol->gaming_lock_end_ns &&
-			   time < rfx_pol->gaming_lock_end_ns) {
-			rfx_pol->in_heavy_mode = true;
-		} else {
-			rfx_pol->in_heavy_mode = false;
-		}
+        if (rfx_pol->gaming_lock_end_ns &&
+            time < rfx_pol->gaming_lock_end_ns) {
+            rfx_pol->in_heavy_mode = true;
+        } else {
+            if (rfx_c->act_state == RFX_ACT_HEAVY)
+                rfx_pol->in_heavy_mode = true;
+            else if (util_pct < 15)
+                rfx_pol->in_heavy_mode = false;
+        }
 
-		if (rfx_pol->policy) {
-			unsigned long cap = arch_scale_cpu_capacity(
-				cpumask_first(rfx_pol->policy->cpus));
+        if (rfx_pol->policy) {
+            unsigned long cap = arch_scale_cpu_capacity(
+                cpumask_first(rfx_pol->policy->cpus));
 
-			if (cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD) {
-				rfx_pol->prime_gaming_floor_active = true;
-				rfx_pol->prime_gaming_floor_end_ns = 0;
-			}
-		}
+            if (cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD) {
+                rfx_pol->prime_gaming_floor_active = true;
+                rfx_pol->prime_gaming_floor_end_ns = 0;
+            }
+        }
 
-		return;
-	}
+        return;
+    }
 
 	if (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns) {
 		rfx_pol->current_mode = RFX_MODE_GAMING;
@@ -560,18 +560,19 @@ static bool rfx_act_update(struct rfx_cpu *rfx_c, unsigned long effective_util,
 	}
 
 	/* Gaming: bypass throttling */
-	if (rfx_pol->in_heavy_mode ||
-	    (rfx_pol->gaming_lock_end_ns && time < rfx_pol->gaming_lock_end_ns) ||
-	    rfx_global_gaming_mode) {
-		rfx_c->act_state      = RFX_ACT_HEAVY;
-		rfx_c->act_up_ticks   = 0;
-		rfx_c->act_down_ticks = 0;
-		rfx_pol->force_idle = false;
-		rfx_pol->in_deep_idle = false;
-		rfx_pol->last_real_update_ns = time;
-		*freq_cap_khz = 0;
-		return false;
-	}
+	if ((rfx_pol->gaming_lock_end_ns &&
+         time < rfx_pol->gaming_lock_end_ns) ||
+        (rfx_global_gaming_mode && rfx_pol->in_heavy_mode)) {
+
+        rfx_c->act_state      = RFX_ACT_HEAVY;
+        rfx_c->act_up_ticks   = 0;
+        rfx_c->act_down_ticks = 0;
+        rfx_pol->force_idle   = false;
+        rfx_pol->in_deep_idle = false;
+        rfx_pol->last_real_update_ns = time;
+        *freq_cap_khz = 0;
+        return false;
+    }
 
 	/* Light/Idle mode: disabled in gaming */
 	if (rfx_global_gaming_mode) {
@@ -737,12 +738,16 @@ static unsigned int rfx_get_adaptive_shift(unsigned long util,
 /* === SIMPLE THERMAL CAP === */
 static void rfx_thermal_simple_cap(struct rfx_policy *rfx_pol, u64 time)
 {
-	unsigned int target_cap;
+    unsigned int target_cap;
 
-	if (rfx_global_gaming_mode)
-		target_cap = RFX_THERMAL_HARD_CAP_PCT;
-	else
-		target_cap = RFX_THERMAL_SOFT_CAP_PCT;
+    if (rfx_global_gaming_mode) {
+        /* Di global gaming, cap sedikit di bawah max
+         * supaya governor sendiri yang landai sebelum throttling keras.
+         */
+        target_cap = 90;   /* atau 88–92 sesuai hasil tes */
+    } else {
+        target_cap = RFX_THERMAL_SOFT_CAP_PCT;
+    }
 
 	if (time - rfx_pol->thermal_cap_last_ns > RFX_THERMAL_GRADUAL_STEP_NS) {
 		rfx_pol->thermal_cap_pct = target_cap;
@@ -1092,7 +1097,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     	else if (!is_little && !is_prime)
         	fpct = 72;   /* BIG */
     	else
-        	fpct = 60;   /* LITTLE */
+        	fpct = 0;   /* LITTLE */
 
     	if (fpct > 0) {
         	unsigned int ff = rfx_adaptive_floor(policy, fpct);
@@ -1657,13 +1662,13 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	/* === Frame pacing boost detection (global gaming only) === */
 	if (rfx_global_gaming_mode &&
     	rfx_pol->current_mode == RFX_MODE_GAMING) {
-    	unsigned int avg = 0, v = 0;
+    	unsigned int avg = 0, v;
     	unsigned int i;
-    	unsigned int util_pct;
     	unsigned int min_u = 100, max_u = 0;
 
     	for (i = 0; i < 8; i++) {
         	unsigned int u = rfx_c->util_history[i];
+
         	avg += u;
         	if (u < min_u)
             	min_u = u;
@@ -1673,12 +1678,6 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
     	avg /= 8;
     	v = max_u - min_u;
 
-    	util_pct = max_cap ? (unsigned int)(effective_util * 100 / max_cap) : 0;
-
-    /*
-     * Syarat: load cukup tinggi, variasi tidak terlalu besar,
-     * dan kita tidak sedang dalam force idle/light.
-     */
     	if (avg >= 70 && avg <= 90 &&
         	v <= 20 &&
         	rfx_c->act_state >= RFX_ACT_MEDIUM &&
@@ -1688,7 +1687,7 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
         	rfx_pol->frame_boost_active = true;
         	rfx_pol->frame_boost_end_ns = time + 40 * NSEC_PER_MSEC;
     	} else if (rfx_pol->frame_boost_active &&
-               	time >= rfx_pol->frame_boost_end_ns) {
+               		time >= rfx_pol->frame_boost_end_ns) {
         	rfx_pol->frame_boost_active = false;
         	rfx_pol->frame_boost_end_ns = 0;
     	}
