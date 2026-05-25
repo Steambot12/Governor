@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 8000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 8000000ULL;
+unsigned int sysctl_sched_latency			= 5000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 5000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
@@ -77,8 +77,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 1200000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 1200000ULL;
+unsigned int sysctl_sched_min_granularity			= 800000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 800000ULL;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_min_granularity			= 750000ULL;
  static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
@@ -94,7 +94,7 @@ static unsigned int sched_nr_latency = 8;
  * After fork, child runs first. If set to 0 (default) then
  * parent will (try to) run first.
  */
-unsigned int sysctl_sched_child_runs_first __read_mostly;
+unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
 
 /*
  * SCHED_OTHER wake-up granularity.
@@ -107,24 +107,24 @@ unsigned int sysctl_sched_child_runs_first __read_mostly;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 750000UL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 750000UL;
+unsigned int sysctl_sched_wakeup_granularity			= 1500000ULL;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1500000ULL;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 500000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 800000UL;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 1;
-u8   __read_mostly sched_burst_smoothness_short = 0;
-u8   __read_mostly sched_burst_fork_atavistic   = 1;
-u8   __read_mostly sched_burst_penalty_offset   = 18;
-uint __read_mostly sched_burst_penalty_scale    = 512;
-uint __read_mostly sched_burst_cache_lifetime   = 100000000;
+u8   __read_mostly sched_burst_smoothness_long  = 2;
+u8   __read_mostly sched_burst_smoothness_short = 1;
+u8   __read_mostly sched_burst_fork_atavistic   = 0;
+u8   __read_mostly sched_burst_penalty_offset   = 22;
+uint __read_mostly sched_burst_penalty_scale    = 550;
+uint __read_mostly sched_burst_cache_lifetime   = 12000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
@@ -11760,17 +11760,6 @@ static unsigned int get_rr_interval_fair(struct rq *rq, struct task_struct *task
 
 	return rr_interval;
 }
-
-#ifdef CONFIG_SCHED_CASS
-#include "cass.c"
-
-/* Use CASS. A dummy wrapper ensures the replaced function is still "used". */
-static inline void *select_task_rq_fair_dummy(void)
-{
-	return (void *)select_task_rq_fair;
-}
-#define select_task_rq_fair cass_select_task_rq_fair
-#endif /* CONFIG_SCHED_CASS */
 
 /*
  * All the scheduling class methods:
