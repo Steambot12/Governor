@@ -1794,19 +1794,19 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 
 	/* Activity state machine for single policy */
 	force_down = rfx_act_update(rfx_c, effective_util, max_cap,
-				    time, &freq_cap_khz);
+                            time, &freq_cap_khz);
 
 	/* Gaming features (burst, frame pacing, crowd-fight) */
 	rfx_update_gaming_features(rfx_pol, rfx_c, time);
 
 	is_heavy = (rfx_c->act_state == RFX_ACT_HEAVY) ||
-		   rfx_pol->in_heavy_mode ||
-		   (rfx_pol->gaming_lock_end_ns &&
-		    time < rfx_pol->gaming_lock_end_ns) ||
-		   rfx_global_gaming_mode;
+           rfx_pol->in_heavy_mode ||
+           (rfx_pol->gaming_lock_end_ns &&
+            time < rfx_pol->gaming_lock_end_ns) ||
+           rfx_global_gaming_mode;
 
 	next_f = rfx_get_next_freq(rfx_pol, effective_util, max_cap,
-				   freq_cap_khz, is_heavy, time);
+                           freq_cap_khz, is_heavy, time);
 
     /* === Burst render boost: awal tembakan / scope === */
     if (rfx_global_gaming_mode &&
@@ -2118,61 +2118,63 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c,
 	bool gaming_features_done = false;
 	bool j_force;
 	unsigned int boost;
+	int cpu;
 
-	for_each_cpu(j_rfxc->cpu, policy->cpus) {
-		j_rfxc = per_cpu_ptr(&rfx_cpu, j_rfxc->cpu);
+	        for_each_cpu(cpu, policy->cpus) {
+                j_rfxc = per_cpu_ptr(&rfx_cpu, cpu);
 
-		j_max_cap = arch_scale_cpu_capacity(j_rfxc->cpu);
-		if (j_max_cap > max_cap)
-			max_cap = j_max_cap;
+                j_max_cap = arch_scale_cpu_capacity(cpu);
+                if (j_max_cap > max_cap)
+                        max_cap = j_max_cap;
 
-		boost = rfx_iowait_apply(j_rfxc, time, j_max_cap);
-		rfx_get_util(j_rfxc, boost);
-		j_util = max(j_rfxc->util, boost);
+                boost = rfx_iowait_apply(j_rfxc, time, j_max_cap);
+                rfx_get_util(j_rfxc, boost);
+                j_util = max(j_rfxc->util, boost);
 
-		rfx_update_busy_pct(j_rfxc,
-				    rfx_pol->tunables->hispeed_window_us,
-				    rfx_pol->tunables->hispeed_filter_shift,
-				    j_max_cap, time);
+                rfx_update_busy_pct(j_rfxc,
+                                    rfx_pol->tunables->hispeed_window_us,
+                                    rfx_pol->tunables->hispeed_filter_shift,
+                                    j_max_cap, time);
 
-		hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
-		j_util = rfx_static_boost(j_rfxc, j_util, j_max_cap, hispeed_pct);
+                hispeed_pct = rfx_get_hispeed_pct(rfx_pol);
+                j_util = rfx_static_boost(j_rfxc, j_util, j_max_cap,
+                                          hispeed_pct);
 
-		rfx_update_adaptive_mode(rfx_pol, j_rfxc, j_util,
-					 j_max_cap,
-					 (j_max_cap > RFX_LITTLE_CAP_THRESHOLD),
-					 time);
+                rfx_update_adaptive_mode(rfx_pol, j_rfxc, j_util,
+                                         j_max_cap,
+                                         (j_max_cap > RFX_LITTLE_CAP_THRESHOLD),
+                                         time);
 
-		j_force = rfx_act_update(j_rfxc, j_util, j_max_cap,
-					 time, &j_cap);
+                j_force = rfx_act_update(j_rfxc, j_util, j_max_cap,
+                                         time, &j_cap);
 
-		rfx_check_freq_hold_or_drop(j_rfxc, j_max_cap, &nohz_drop);
+                rfx_check_freq_hold_or_drop(j_rfxc, j_max_cap, &nohz_drop);
 
-		if (!gaming_features_done && gaming_active) {
-			struct rfx_cpu *lead_c;
+                if (!gaming_features_done && gaming_active) {
+                        struct rfx_cpu *lead_c;
 
-			lead_c = per_cpu_ptr(&rfx_cpu,
-					     cpumask_first(policy->cpus));
-			rfx_update_gaming_features(rfx_pol, lead_c, time);
-			gaming_features_done = true;
-		}
+                        lead_c = per_cpu_ptr(&rfx_cpu,
+                                             cpumask_first(policy->cpus));
+                        rfx_update_gaming_features(rfx_pol, lead_c, time);
+                        gaming_features_done = true;
+                }
 
-		if (j_rfxc->act_state == RFX_ACT_HEAVY ||
-		    gaming_active || rfx_pol->in_heavy_mode)
-			any_heavy = true;
+                if (j_rfxc->act_state == RFX_ACT_HEAVY ||
+                    gaming_active || rfx_pol->in_heavy_mode)
+                        any_heavy = true;
 
-		if (j_force || nohz_drop)
-			any_force_down = true;
+                if (j_force || nohz_drop)
+                        any_force_down = true;
 
-		if (j_cap == 0) {
-			freq_cap_khz = 0;
-		} else if (freq_cap_khz == 0 || j_cap < freq_cap_khz) {
-			freq_cap_khz = j_cap;
-		}
+                if (j_cap == 0) {
+                        freq_cap_khz = 0;
+                } else if (freq_cap_khz == 0 || j_cap < freq_cap_khz) {
+                        freq_cap_khz = j_cap;
+                }
 
-		if (j_util > util)
-			util = j_util;
-	}
+                if (j_util > util)
+                        util = j_util;
+        }
 
 	next_f = rfx_get_next_freq(rfx_pol, util, max_cap,
 				   freq_cap_khz, any_heavy, time);
