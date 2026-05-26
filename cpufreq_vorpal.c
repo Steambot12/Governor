@@ -64,12 +64,12 @@ static unsigned int rfx_global_gaming_mode;
 
 /* GAMING RATE LIMITS */
 #define RFX_GAMING_UP_RATE_LIMIT_US     0
-#define RFX_GAMING_DOWN_RATE_LIMIT_US   9000
+#define RFX_GAMING_DOWN_RATE_LIMIT_US  12000
 
 /* === FULL GAMING MODE ADJUSTMENTS === */
-#define RFX_GLOB_GAMING_FLOOR_LITTLE_PCT   68
+#define RFX_GLOB_GAMING_FLOOR_LITTLE_PCT   60
 #define RFX_GLOB_GAMING_FLOOR_BIG_PCT      80
-#define RFX_GLOB_GAMING_FLOOR_PRIME_PCT    86
+#define RFX_GLOB_GAMING_FLOOR_PRIME_PCT    84
 #define RFX_LITTLE_GLOB_GAMING_CAP_PCT     100
 #define RFX_GLOB_GAMING_THERMAL_CAP_PCT    94
 
@@ -99,7 +99,7 @@ static unsigned int rfx_global_gaming_mode;
 
 /* Adaptive Gaming */
 #define RFX_GAMING_MAX_PCT              92
-#define RFX_BIG_GAMING_MAX_PCT          92
+#define RFX_BIG_GAMING_MAX_PCT          90
 #define RFX_PRIME_GAMING_FLOOR_PCT      87
 #define RFX_GAME_LAUNCH_FLOOR_PCT       72
 #define RFX_BIG_INTERACTIVE_FLOOR_PCT   22
@@ -780,11 +780,11 @@ static unsigned long rfx_apply_headroom(unsigned long util,
 
 	if (mode == RFX_MODE_GAMING) {
 		if (is_prime)
-			headroom_pct = is_heavy ? 14 : 10;
+			headroom_pct = is_heavy ? 8 : 5;
 		else if (max_cap > RFX_LITTLE_CAP_THRESHOLD)
-			headroom_pct = is_heavy ? 12 : 8;
+			headroom_pct = is_heavy ? 6 : 4;
 		else
-			headroom_pct = is_heavy ? 8 : 4;
+			headroom_pct = is_heavy ? 4 : 2;
 
 		return min(util + util * headroom_pct / 100, max_cap);
 	}
@@ -968,7 +968,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 
     gaming_active = rfx_gaming_active(rfx_pol, time);
 
-    /* 1) Apply headroom (sedikit lebih jinak untuk mengurangi osilasi) */
+    /* 1) Apply headroom (disederhanakan untuk mengurangi osilasi) */
     util = rfx_apply_headroom(util, max, is_heavy, rfx_pol->current_mode);
 
     /* 2) Hitung freq awal dari util */
@@ -977,15 +977,15 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
     freq = clamp_t(unsigned int, freq,
                    policy->cpuinfo.min_freq, policy->cpuinfo.max_freq);
 
-    /* 3) Global / auto gaming floor – SATU sumber floor utama */
+    /* 3) GLOBAL / AUTO GAMING FLOOR – sumber floor utama saja */
     if (gaming_active) {
         if (rfx_global_gaming_mode) {
             if (is_prime)
-                floor_pct = RFX_GLOB_GAMING_FLOOR_PRIME_PCT;
+                floor_pct = RFX_GLOB_GAMING_FLOOR_PRIME_PCT;   /* misal 84 */
             else if (is_little)
-                floor_pct = RFX_GLOB_GAMING_FLOOR_LITTLE_PCT;
+                floor_pct = RFX_GLOB_GAMING_FLOOR_LITTLE_PCT;  /* misal 60 */
             else
-                floor_pct = RFX_GLOB_GAMING_FLOOR_BIG_PCT;
+                floor_pct = RFX_GLOB_GAMING_FLOOR_BIG_PCT;     /* misal 80 */
         } else {
             if (is_prime)
                 floor_pct = RFX_GAMING_FLOOR_PRIME_PCT;
@@ -1031,7 +1031,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
             freq = launch_floor;
     }
 
-    /* 7) Thermal cap: gaming dan daily */
+    /* 7) Thermal cap: gaming & daily */
     if (rfx_pol->current_mode == RFX_MODE_GAMING &&
         rfx_global_gaming_mode)
         rfx_thermal_simple_cap(rfx_pol, time);
@@ -1040,7 +1040,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         unsigned int thermal_pct;
 
         if (rfx_global_gaming_mode)
-            thermal_pct = RFX_GLOB_GAMING_THERMAL_CAP_PCT;
+            thermal_pct = RFX_GLOB_GAMING_THERMAL_CAP_PCT;  /* 94 */
         else
             thermal_pct = rfx_pol->thermal_cap_pct;
 
@@ -1068,67 +1068,69 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         }
     }
 
-    /* 9) Render urgency: naikkan sedikit di atas floor saat ada spike render */
-    if (rfx_global_gaming_mode &&
-        rfx_pol->render_urgency_active &&
-        rfx_pol->render_boost_end_ns &&
-        time < rfx_pol->render_boost_end_ns) {
-        if (is_prime) {
-            unsigned int ru_floor =
-                rfx_adaptive_floor(policy, 90);
-            if (freq < ru_floor)
-                freq = ru_floor;
-        } else if (!is_little && !is_prime) {
-            unsigned int ru_floor =
-                rfx_adaptive_floor(policy, 82);
-            if (freq < ru_floor)
-                freq = ru_floor;
+    /* 9) MATIKAN frame & burst boost ketika GLOBAL GAMING on */
+    if (!rfx_global_gaming_mode) {
+        /* Render urgency / frame / burst hanya untuk auto‑gaming (opsional) */
+
+        /* Render urgency */
+        if (rfx_pol->render_urgency_active &&
+            rfx_pol->render_boost_end_ns &&
+            time < rfx_pol->render_boost_end_ns) {
+            if (is_prime) {
+                unsigned int ru_floor =
+                    rfx_adaptive_floor(policy, 90);
+                if (freq < ru_floor)
+                    freq = ru_floor;
+            } else if (!is_little && !is_prime) {
+                unsigned int ru_floor =
+                    rfx_adaptive_floor(policy, 82);
+                if (freq < ru_floor)
+                    freq = ru_floor;
+            }
+        }
+
+        /* Frame pacing boost */
+        if (rfx_pol->frame_boost_active &&
+            rfx_pol->frame_boost_end_ns &&
+            time < rfx_pol->frame_boost_end_ns) {
+            unsigned int fpct;
+
+            if (is_prime)
+                fpct = 80;
+            else if (!is_little && !is_prime)
+                fpct = 72;
+            else
+                fpct = 60;
+
+            if (fpct > 0) {
+                unsigned int ff = rfx_adaptive_floor(policy, fpct);
+                if (freq < ff)
+                    freq = ff;
+            }
+        }
+
+        /* Burst render boost */
+        if (rfx_pol->burst_boost_active &&
+            rfx_pol->burst_boost_end_ns &&
+            time < rfx_pol->burst_boost_end_ns) {
+            unsigned int bpct;
+
+            if (is_prime)
+                bpct = 88;
+            else if (!is_little && !is_prime)
+                bpct = 80;
+            else
+                bpct = 0;
+
+            if (bpct > 0) {
+                unsigned int bf = rfx_adaptive_floor(policy, bpct);
+                if (freq < bf)
+                    freq = bf;
+            }
         }
     }
 
-    /* 10) Frame pacing boost: semi‑floor ringan (tidak terlalu tinggi) */
-    if (rfx_global_gaming_mode &&
-        rfx_pol->frame_boost_active &&
-        rfx_pol->frame_boost_end_ns &&
-        time < rfx_pol->frame_boost_end_ns) {
-        unsigned int fpct;
-
-        if (is_prime)
-            fpct = 80;
-        else if (!is_little && !is_prime)
-            fpct = 72;
-        else
-            fpct = 60;
-
-        if (fpct > 0) {
-            unsigned int ff = rfx_adaptive_floor(policy, fpct);
-            if (freq < ff)
-                freq = ff;
-        }
-    }
-
-    /* 11) Burst render boost: singkat, dekat max tapi tidak 100% */
-    if (rfx_global_gaming_mode &&
-        rfx_pol->burst_boost_active &&
-        rfx_pol->burst_boost_end_ns &&
-        time < rfx_pol->burst_boost_end_ns) {
-        unsigned int bpct;
-
-        if (is_prime)
-            bpct = 88;
-        else if (!is_little && !is_prime)
-            bpct = 80;
-        else
-            bpct = 0;   /* LITTLE tidak perlu burst */
-
-        if (bpct > 0) {
-            unsigned int bf = rfx_adaptive_floor(policy, bpct);
-            if (freq < bf)
-                freq = bf;
-        }
-    }
-
-    /* 12) Soft‑exit heavy di non‑gaming big/prime */
+    /* 10) Soft‑exit heavy di non‑gaming big/prime */
     if (rfx_pol->in_heavy_mode &&
         rfx_pol->current_mode != RFX_MODE_GAMING &&
         !rfx_global_gaming_mode && !is_little) {
@@ -1144,7 +1146,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         }
     }
 
-    /* 13) PRIME prime_gaming_floor_active: hanya tail non‑gaming */
+    /* 11) PRIME prime_gaming_floor_active: tail non‑gaming saja */
     if (is_prime &&
         rfx_pol->current_mode != RFX_MODE_GAMING &&
         !rfx_global_gaming_mode &&
@@ -1157,7 +1159,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
             freq = pg_floor;
     }
 
-    /* 14) Interactive floor (non‑heavy) */
+    /* 12) Interactive floor (non‑heavy) */
     if (!rfx_pol->in_heavy_mode &&
         rfx_pol->interactive_end_ns &&
         time < rfx_pol->interactive_end_ns) {
@@ -1177,14 +1179,14 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
         }
     }
 
-    /* 15) Force idle non‑gaming LITTLE */
+    /* 13) Force idle non‑gaming LITTLE */
     if (rfx_pol->force_idle && !is_heavy && !rfx_global_gaming_mode)
         freq = policy->cpuinfo.min_freq;
 
     if (freq_cap_khz > 0 && freq > freq_cap_khz)
         freq = freq_cap_khz;
 
-    /* 16) EMA smoothing */
+    /* 14) EMA smoothing */
     freq = rfx_ema_smooth(rfx_pol, freq, time);
 
     if (freq == rfx_pol->cached_raw_freq && !rfx_pol->need_freq_update)
@@ -1394,98 +1396,63 @@ static void rfx_update_adaptive_mode(struct rfx_policy *rfx_pol,
 /* === GAMING FEATURES: burst, frame pacing, crowd-fight === */
 
 static void rfx_update_gaming_features(struct rfx_policy *rfx_pol,
-				       struct rfx_cpu *rfx_c,
-				       u64 time)
+                                       struct rfx_cpu *rfx_c, u64 time)
 {
-	unsigned int idx, h1, h2, h3;
-	unsigned int avg = 0, v;
-	unsigned int i, min_u = 100, max_u = 0;
-	bool rising, sudden_spike, sustained_heavy, ultra_spike;
-	bool burst_up;
+    unsigned int idx, h1, h2, h3;
+    unsigned int avg = 0, v = 0;
+    unsigned int i, min_u = 100, max_u = 0;
+    bool burst_up;
 
-	if (!rfx_global_gaming_mode ||
-	    rfx_pol->current_mode != RFX_MODE_GAMING)
-		goto disable_non_gaming;
+    /* Jika global gaming on, biarkan global floor + headroom yang kerja,
+     * fitur ini hanya untuk auto‑gaming.
+     */
+    if (rfx_global_gaming_mode ||
+        rfx_pol->current_mode != RFX_MODE_GAMING)
+        goto disable_non_gaming;
 
-	idx = rfx_c->util_history_idx;
-	h1 = rfx_c->util_history[(idx - 1) & 7];
-	h2 = rfx_c->util_history[(idx - 2) & 7];
-	h3 = rfx_c->util_history[(idx - 3) & 7];
+    idx = rfx_c->util_history_idx;
+    h1  = rfx_c->util_history[(idx - 1) & 0x7];
+    h2  = rfx_c->util_history[(idx - 2) & 0x7];
+    h3  = rfx_c->util_history[(idx - 3) & 0x7];
 
-	burst_up =
-		((h1 >= 60 && h2 <= 35 && h3 <= 30) ||
-     	(h1 >= 72 && h1 >= h2 + 14));
+    /* Contoh burst simple */
+    burst_up =
+        ((h1 >= 60 && h2 <= 35 && h3 <= 30) ||
+         (h1 >= 72 && h1 >= h2 + 14));
 
-	if (burst_up && !rfx_pol->burst_boost_active) {
-    	rfx_pol->burst_boost_active = true;
-    	rfx_pol->burst_boost_end_ns = time + 16 * NSEC_PER_MSEC; /* 2 frame @120Hz */
-	}
+    if (burst_up && !rfx_pol->burst_boost_active) {
+        rfx_pol->burst_boost_active = true;
+        rfx_pol->burst_boost_end_ns = time + 16 * NSEC_PER_MSEC;
+    }
 
-	for (i = 0; i < 8; i++) {
-		unsigned int u = rfx_c->util_history[i];
+    /* Frame pacing sederhana */
+    for (i = 0; i < 8; i++) {
+        unsigned int u = rfx_c->util_history[i];
+        avg += u;
+        if (u < min_u)
+            min_u = u;
+        if (u > max_u)
+            max_u = u;
+    }
+    avg /= 8;
+    v = max_u - min_u;
 
-		avg += u;
-		if (u < min_u)
-			min_u = u;
-		if (u > max_u)
-			max_u = u;
-	}
-	avg /= 8;
-	v = max_u - min_u;
+    if (avg >= 70 && avg <= 85 &&
+        v <= 16 &&
+        rfx_c->act_state >= RFX_ACT_MEDIUM &&
+        !rfx_pol->force_idle &&
+        !rfx_pol->in_light_mode) {
+        rfx_pol->frame_boost_active = true;
+        rfx_pol->frame_boost_end_ns = time + 24 * NSEC_PER_MSEC;
+    }
 
-	if (avg >= 70 && avg <= 85 &&
-    	v <= 16 &&
-    	rfx_c->act_state >= RFX_ACT_MEDIUM &&
-    	!rfx_pol->force_idle &&
-    	!rfx_pol->in_light_mode) {
-    	rfx_pol->frame_boost_active = true;
-    	rfx_pol->frame_boost_end_ns = time + 24 * NSEC_PER_MSEC;
-	}
-
-	/* --- Crowd-fight spike lock + render urgency --- */
-	rising = (h1 > h2 + 6) && (h2 > h3 + 6) && (h1 >= 40);
-	sudden_spike = (h1 >= 60) && (h2 <= 32) && (h1 >= h2 + 18);
-	sustained_heavy = (h1 >= 55) && (h2 >= 50) && (h3 >= 45);
-	ultra_spike = (h1 >= 68) && (h2 <= 38);
-
-	if (rising || sudden_spike || sustained_heavy || ultra_spike) {
-		u64 lock_add, boost_dur;
-		u64 max_lock;
-
-		if (ultra_spike) {
-			lock_add  = 140 * NSEC_PER_MSEC;
-			boost_dur =  45 * NSEC_PER_MSEC;
-		} else {
-			lock_add  =  90 * NSEC_PER_MSEC;
-			boost_dur =  36 * NSEC_PER_MSEC;
-		}
-
-		if (!rfx_pol->gaming_lock_end_ns ||
-		    time > rfx_pol->gaming_lock_end_ns)
-			rfx_pol->gaming_lock_end_ns = time + lock_add;
-		else
-			rfx_pol->gaming_lock_end_ns += lock_add / 2;
-
-		max_lock = time + 320 * NSEC_PER_MSEC;
-		if (rfx_pol->gaming_lock_end_ns > max_lock)
-			rfx_pol->gaming_lock_end_ns = max_lock;
-
-		rfx_pol->in_heavy_mode          = true;
-		rfx_pol->render_urgency_active  = true;
-		rfx_pol->render_boost_end_ns    = time + boost_dur;
-	} else if (rfx_pol->render_boost_end_ns &&
-		   time >= rfx_pol->render_boost_end_ns) {
-		rfx_pol->render_urgency_active = false;
-		rfx_pol->render_boost_end_ns   = 0;
-	}
-
-	return;
+    return;
 
 disable_non_gaming:
-	rfx_pol->frame_boost_active   = false;
-	rfx_pol->frame_boost_end_ns   = 0;
-	rfx_pol->burst_boost_active   = false;
-	rfx_pol->burst_boost_end_ns   = 0;
+    rfx_pol->frame_boost_active  = false;
+    rfx_pol->frame_boost_end_ns  = 0;
+    rfx_pol->burst_boost_active  = false;
+    rfx_pol->burst_boost_end_ns  = 0;
 }
 
 /* === BUSY PERCENT & STATIC BOOST === */
