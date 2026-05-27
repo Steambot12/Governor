@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Vorpal CPUFreq Governor v4.1 - Adaptive Gaming Edition
- * Based on schedutil — rewritten for 120fps sustained gaming
- * Features:
- *   - Predictive Frequency Scaling (sliding-window histogram + trend projection)
- *   - Frame-Deadline Aware Scheduling (render budget tracking)
- *   - Per-Cluster Asymmetric Frequency Policy (Prime/Big/Little)
- *   - Builtin Adaptive FPS & Thermal (no userspace sysfs)
- *   - Iowait-Sensitive Boost + Early Wake-Up
- *   - Thermal-Aware Dynamic Headroom
- *   - Global Gaming Mode (Prime-only sysfs toggle, affects all clusters)
+ * Vorpal CPUFreq Governor v4.2 - Sustained 120FPS Tuning
+ * Based on v4.1 — retuned for zero-drop 120fps gaming
+ * 
+ * Tuning changes from v4.1:
+ *   - Predictive thresholds lowered for earlier boost (50/65)
+ *   - Projection dampened (+15/+8) to reduce power spikes
+ *   - EMA alpha 0.85 for faster spike tracking
+ *   - Frame emergency trigger moved to 4ms (was 2.5ms)
+ *   - Render phase detection raised to 30% (was 20%)
+ *   - BIG cluster cap removed (100%), floor raised 60%
+ *   - LITTLE cluster cap raised to 85%, floor 25%
+ *   - PRIME target 100%, floor 85%
+ *   - Gaming down rate limit 2.5ms (was 5ms) for power saving
+ *   - IOWait threshold 4, Little boost 65%
+ *   - Thermal normal cap 95%, headroom 25°C
  *
  * Author: Templar Dev (Steambot12) + AI Optimization
  */
@@ -35,7 +40,7 @@
 
 #define CPUFREQ_VORPAL_PROGNAME	"Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR	"Templar Dev"
-#define CPUFREQ_VORPAL_VERSION	"4.1-Adaptive-Gaming"
+#define CPUFREQ_VORPAL_VERSION	"4.2-Sustained120"
 
 /* === GKI 5.10 COMPAT EXTERNS === */
 extern void rfx_get_util_gki510(int cpu, unsigned long boost,
@@ -48,70 +53,67 @@ static struct cpufreq_governor vorpal_gov;
 static unsigned int rfx_global_gaming_mode;
 
 /* === BUILTIN ADAPTIVE CONFIG (Prime cluster only via sysfs) === */
-/* When gaming_mode=1, these auto-activate with sweetspot values */
 #define RFX_BUILTIN_FPS_HINT		120
 #define RFX_BUILTIN_ACTUAL_FPS		120
-#define RFX_BUILTIN_THERMAL_HEADROOM	20
+#define RFX_BUILTIN_THERMAL_HEADROOM	25	/* v4.2: increased from 20 */
 
 /* === PREDICTIVE ENGINE === */
 #define RFX_PREDICTOR_WINDOW		16
-#define RFX_PREDICT_BOOST_THRESHOLD	60	/* lowered: earlier pre-emptive boost */
-#define RFX_PREDICT_FAST_UP_THRESHOLD	75	/* lowered: faster ramp */
+#define RFX_PREDICT_BOOST_THRESHOLD	50	/* v4.2: earlier boost (was 60) */
+#define RFX_PREDICT_FAST_UP_THRESHOLD	65	/* v4.2: faster ramp (was 75) */
 
 /* === FRAME DEADLINE === */
-#define RFX_FRAME_BUDGET_120HZ_NS	8333333ULL	/* ~8.33ms */
-#define RFX_FRAME_BUDGET_90HZ_NS	11111111ULL	/* ~11.1ms */
-#define RFX_FRAME_BUDGET_60HZ_NS	16666667ULL	/* ~16.67ms */
-#define RFX_FRAME_EMERGENCY_NS		2500000ULL	/* 2.5ms remaining = emergency */
-#define RFX_FRAME_PHASE_THRESHOLD_PCT	20	/* lowered: earlier render detect */
+#define RFX_FRAME_BUDGET_120HZ_NS	8333333ULL
+#define RFX_FRAME_BUDGET_90HZ_NS	11111111ULL
+#define RFX_FRAME_BUDGET_60HZ_NS	16666667ULL
+#define RFX_FRAME_EMERGENCY_NS		4000000ULL	/* v4.2: 4ms early warning (was 2.5ms) */
+#define RFX_FRAME_PHASE_THRESHOLD_PCT	30	/* v4.2: better render detect (was 20) */
 
 /* === ASYMMETRIC CLUSTER POLICY === */
-#define RFX_ASYM_PRIME_FLOOR_PCT	80
-#define RFX_ASYM_PRIME_TARGET_PCT	98	/* almost max, no hard cap */
-#define RFX_ASYM_BIG_FLOOR_PCT		55
-#define RFX_ASYM_BIG_CAP_PCT		95	/* raised: heavy games need big power */
-#define RFX_ASYM_LITTLE_FLOOR_PCT	20
-#define RFX_ASYM_LITTLE_CAP_PCT		70	/* raised: better aux thread handling */
+#define RFX_ASYM_PRIME_FLOOR_PCT	85	/* v4.2: higher floor (was 80) */
+#define RFX_ASYM_PRIME_TARGET_PCT	100	/* v4.2: no cap (was 98) */
+#define RFX_ASYM_BIG_FLOOR_PCT		60	/* v4.2: higher floor (was 55) */
+#define RFX_ASYM_BIG_CAP_PCT		100	/* v4.2: unlocked (was 95) */
+#define RFX_ASYM_LITTLE_FLOOR_PCT	25	/* v4.2: higher floor (was 20) */
+#define RFX_ASYM_LITTLE_CAP_PCT		85	/* v4.2: more aux thread headroom (was 70) */
 
 /* === CPU USAGE SOFT CAP === */
-/* Disabled during gaming_mode=1 to prevent jank from artificial limiting */
 #define RFX_CPU_USAGE_SOFT_CAP		70
 #define RFX_CPU_USAGE_CAP_STEP_DIV	12
 
 /* === FPS FEEDBACK === */
-/* Kept internal only — no sysfs exposure */
 #define RFX_FPS_STABLE_THRESHOLD	2
 #define RFX_FPS_BREACH_THRESHOLD	10
 #define RFX_FPS_STABLE_TIME_NS		(500 * NSEC_PER_MSEC)
 #define RFX_FPS_BURST_DURATION_NS	(300 * NSEC_PER_MSEC)
 
 /* === IO WAIT BOOST === */
-#define RFX_IOWAIT_BOOST_THRESHOLD	8	/* lowered: more responsive */
+#define RFX_IOWAIT_BOOST_THRESHOLD	4	/* v4.2: more responsive (was 8) */
 #define RFX_IOWAIT_BOOST_PRIME_PCT	90
 #define RFX_IOWAIT_BOOST_BIG_PCT	75
-#define RFX_IOWAIT_BOOST_LITTLE_PCT	50
+#define RFX_IOWAIT_BOOST_LITTLE_PCT	65	/* v4.2: higher little boost (was 50) */
 
 /* === THERMAL === */
-#define RFX_THERMAL_HEADROOM_DEFAULT	20	/* builtin sweetspot */
+#define RFX_THERMAL_HEADROOM_DEFAULT	25	/* v4.2: more headroom (was 20) */
 #define RFX_THERMAL_HARD_MARGIN		5
 #define RFX_THERMAL_SOFT_MARGIN		10
 #define RFX_THERMAL_CAP_HARD_PCT	50
 #define RFX_THERMAL_CAP_SOFT_PCT	70
-#define RFX_THERMAL_CAP_NORMAL_PCT	90	/* raised for gaming perf */
+#define RFX_THERMAL_CAP_NORMAL_PCT	95	/* v4.2: higher gaming perf (was 90) */
 
 /* === RATE LIMITS === */
 #define RFX_RATE_LIMIT_GAMING_UP_US	0
-#define RFX_RATE_LIMIT_GAMING_DOWN_US	5000	/* 5ms: more responsive than 10ms */
+#define RFX_RATE_LIMIT_GAMING_DOWN_US	2500	/* v4.2: faster down for power (was 5000) */
 #define RFX_RATE_LIMIT_DEFAULT_UP_US	500
-#define RFX_RATE_LIMIT_DEFAULT_DOWN_US	8000
+#define RFX_RATE_LIMIT_DEFAULT_DOWN_US	5000	/* v4.2: more responsive daily (was 8000) */
 #define RFX_RATE_LIMIT_IDLE_DOWN_US	2000
 
 /* === IDLE === */
-#define RFX_IDLE_CAP_PCT		20
+#define RFX_IDLE_CAP_PCT		15	/* v4.2: lower idle power (was 20) */
 
 /* === EMA === */
-#define RFX_EMA_ALPHA_NUM		7	/* 0.7: more responsive */
-#define RFX_EMA_ALPHA_DEN		10
+#define RFX_EMA_ALPHA_NUM		85	/* v4.2: 0.85 faster tracking (was 0.7) */
+#define RFX_EMA_ALPHA_DEN		100
 
 /* === CLUSTER DETECTION === */
 #define RFX_LITTLE_CAP_THRESHOLD	614
@@ -156,7 +158,7 @@ struct rfx_fps_state {
 };
 
 struct rfx_thermal_state {
-	int headroom;		/* degrees C before throttle (builtin 20) */
+	int headroom;		/* degrees C before throttle (builtin 25) */
 	bool active;
 };
 
@@ -194,7 +196,7 @@ struct rfx_policy {
 	bool need_freq_update;
 	u64 last_real_update_ns;
 
-	/* v4.1 state */
+	/* v4.2 state */
 	struct rfx_frame_tracker frame_tracker;
 	struct rfx_fps_state fps_state;
 	struct rfx_thermal_state thermal;
@@ -217,7 +219,7 @@ struct rfx_cpu {
 	unsigned int busy_pct;
 	unsigned int prev_util_pct;
 
-	/* v4.1 */
+	/* v4.2 */
 	struct rfx_predictor predictor;
 #ifdef CONFIG_NO_HZ_COMMON
 	unsigned long saved_idle_calls;
@@ -260,9 +262,6 @@ static inline struct rfx_tunables *to_rfx_tunables(struct gov_attr_set *attr_set
 
 static inline bool rfx_gaming_active(struct rfx_policy *rfx_pol, u64 time)
 {
-	/* Gaming mode is controlled ONLY by global toggle.
-	 * Builtin FPS/thermal values do not auto-enable gaming logic.
-	 */
 	return rfx_global_gaming_mode || rfx_pol->fps_state.breach;
 }
 
@@ -300,7 +299,7 @@ static void rfx_predictor_update(struct rfx_predictor *p, unsigned int util_pct,
 	p->hist[p->idx] = util_pct;
 	p->idx = (p->idx + 1) & (RFX_PREDICTOR_WINDOW - 1);
 
-	/* EMA: alpha = 0.7 for gaming, 0.3 for daily */
+	/* EMA: alpha = 0.85 for gaming, 0.3 for daily */
 	if (rfx_global_gaming_mode)
 		p->ema = (RFX_EMA_ALPHA_NUM * util_pct +
 			  (RFX_EMA_ALPHA_DEN - RFX_EMA_ALPHA_NUM) * old_ema) / RFX_EMA_ALPHA_DEN;
@@ -326,16 +325,16 @@ static void rfx_predictor_update(struct rfx_predictor *p, unsigned int util_pct,
 	else
 		p->trend = 0;	/* stable */
 
-	/* Prediction with projection */
+	/* Prediction with projection — v4.2 dampened */
 	p->predicted = p->ema;
 	if (p->trend == 2)
-		p->predicted = min(100U, p->predicted + 22);
+		p->predicted = min(100U, p->predicted + 15);  /* v4.2: was +22 */
 	else if (p->trend == 1)
-		p->predicted = min(100U, p->predicted + 10);
+		p->predicted = min(100U, p->predicted + 8);   /* v4.2: was +10 */
 	else if (p->trend == -2)
-		p->predicted = (p->predicted > 22) ? p->predicted - 22 : 0;
+		p->predicted = (p->predicted > 15) ? p->predicted - 15 : 0;  /* was -22 */
 	else if (p->trend == -1)
-		p->predicted = (p->predicted > 10) ? p->predicted - 10 : 0;
+		p->predicted = (p->predicted > 8) ? p->predicted - 8 : 0;    /* was -10 */
 
 	p->last_update_ns = time;
 }
@@ -387,12 +386,16 @@ static bool rfx_frame_needs_emergency_boost(struct rfx_frame_tracker *ft,
 	else
 		remaining = 0;
 
-	/* Less than 2.5ms remaining with high util -> emergency */
+	/* v4.2: 4ms remaining with high util -> emergency */
 	if (remaining < RFX_FRAME_EMERGENCY_NS && util_pct > 55)
 		return true;
 
 	/* Budget exceeded */
 	if (ft->phase_ns > ft->budget_ns)
+		return true;
+
+	/* v4.2: Early warning at 75% budget with medium-high util */
+	if (ft->phase_ns > (ft->budget_ns * 3 / 4) && util_pct > 40)
 		return true;
 
 	return false;
@@ -407,10 +410,6 @@ static void rfx_fps_init(struct rfx_fps_state *fps)
 
 static void rfx_fps_update(struct rfx_fps_state *fps, u64 time)
 {
-	/* Builtin values: hint=120, actual=120
-	 * During gaming we keep stabilized=false to avoid soft-cap limiting.
-	 * Breach is kept false since builtin actual always matches hint.
-	 */
 	if (!fps->hint) {
 		fps->stabilized = false;
 		fps->breach = false;
@@ -418,12 +417,8 @@ static void rfx_fps_update(struct rfx_fps_state *fps, u64 time)
 		return;
 	}
 
-	/* With builtin actual_fps == hint, we are technically "stabilized",
-	 * but we intentionally ignore soft-cap during gaming_mode.
-	 * Keep breach false since we never drop below builtin actual. */
 	fps->breach = false;
 
-	/* For non-gaming: allow stabilized detection for power saving */
 	if (!rfx_global_gaming_mode) {
 		if (fps->actual >= fps->hint - RFX_FPS_STABLE_THRESHOLD) {
 			if (!fps->stabilized) {
@@ -437,7 +432,6 @@ static void rfx_fps_update(struct rfx_fps_state *fps, u64 time)
 			fps->stabilized_since_ns = 0;
 		}
 	} else {
-		/* During gaming: force not stabilized so soft-cap never triggers */
 		fps->stabilized = false;
 		fps->stabilized_since_ns = 0;
 	}
@@ -452,8 +446,8 @@ static void rfx_thermal_init(struct rfx_thermal_state *th)
 }
 
 static unsigned int rfx_thermal_apply(struct rfx_thermal_state *th,
-					struct cpufreq_policy *policy,
-					unsigned int target_freq)
+				      struct cpufreq_policy *policy,
+				      unsigned int target_freq)
 {
 	unsigned int max_freq = policy->cpuinfo.max_freq;
 	unsigned int thermal_max;
@@ -488,7 +482,6 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 
 	switch (cluster) {
 	case RFX_CLUSTER_PRIME:
-		/* Aggressive: floor 80%, target 98% when stabilized */
 		floor = min + ((max - min) * RFX_ASYM_PRIME_FLOOR_PCT / 100);
 		target = min + ((max - min) * RFX_ASYM_PRIME_TARGET_PCT / 100);
 
@@ -499,7 +492,7 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 		return min(raw_freq, max);
 
 	case RFX_CLUSTER_BIG:
-		/* Moderate-aggressive: floor 55%, cap 95% */
+		/* v4.2: Unlocked big cluster for heavy gaming */
 		floor = min + ((max - min) * RFX_ASYM_BIG_FLOOR_PCT / 100);
 		cap = min + ((max - min) * RFX_ASYM_BIG_CAP_PCT / 100);
 
@@ -510,7 +503,7 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 		return raw_freq;
 
 	case RFX_CLUSTER_LITTLE:
-		/* Capped: floor 20%, cap 70% */
+		/* v4.2: More headroom for aux threads */
 		floor = min + ((max - min) * RFX_ASYM_LITTLE_FLOOR_PCT / 100);
 		cap = min + ((max - min) * RFX_ASYM_LITTLE_CAP_PCT / 100);
 
@@ -525,7 +518,6 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 }
 
 /* === CPU USAGE SOFT CAP === */
-/* DISABLED during gaming_mode=1 to prevent artificial jank */
 
 static unsigned int rfx_apply_cpu_usage_cap(struct rfx_policy *rfx_pol,
 					    unsigned int target_freq)
@@ -533,18 +525,15 @@ static unsigned int rfx_apply_cpu_usage_cap(struct rfx_policy *rfx_pol,
 	struct cpufreq_policy *policy = rfx_pol->policy;
 	unsigned int step;
 
-	/* Hard disable during gaming — never limit CPU when gaming */
 	if (rfx_global_gaming_mode)
 		return target_freq;
 
-	/* Also require stabilized FPS before capping (non-gaming only) */
 	if (!rfx_pol->fps_state.stabilized)
 		return target_freq;
 
 	if (rfx_pol->avg_util_pct <= RFX_CPU_USAGE_SOFT_CAP)
 		return target_freq;
 
-	/* Reduce by one step to keep usage under control */
 	step = (policy->cpuinfo.max_freq - policy->cpuinfo.min_freq) / RFX_CPU_USAGE_CAP_STEP_DIV;
 	if (target_freq > step)
 		target_freq -= step;
@@ -770,10 +759,10 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			freq = predict_freq;
 	}
 
-	/* 3. Fast-up prediction: if trend is fast up, boost aggressively */
+	/* 3. Fast-up prediction: v4.2 capped at 95% to reduce power spike */
 	if (gaming && rfx_c->predictor.trend == 2 &&
 	    rfx_c->predictor.predicted > RFX_PREDICT_FAST_UP_THRESHOLD) {
-		unsigned int fast_freq = rfx_adaptive_max(policy, 98);
+		unsigned int fast_freq = rfx_adaptive_max(policy, 95);  /* v4.2: was 98 */
 		if (fast_freq > freq)
 			freq = fast_freq;
 	}
@@ -784,7 +773,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 		freq = policy->cpuinfo.max_freq;
 	}
 
-	/* 5. FPS breach burst mode (kept for safety, though builtin actual avoids breach) */
+	/* 5. FPS breach burst mode */
 	if (gaming && rfx_pol->fps_state.breach &&
 	    time < rfx_pol->fps_state.breach_end_ns) {
 		if (cluster == RFX_CLUSTER_PRIME || cluster == RFX_CLUSTER_BIG)
@@ -810,7 +799,20 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			freq = idle_cap;
 	}
 
-	/* 11. Resolve to driver-supported frequency */
+	/* 11. v4.2: Gaming idle-between-frames power save for Big/Little */
+	if (gaming && !rfx_pol->frame_tracker.in_render_phase && util_pct < 20) {
+		if (cluster == RFX_CLUSTER_LITTLE) {
+			unsigned int idle_cap = rfx_adaptive_max(policy, RFX_IDLE_CAP_PCT);
+			if (freq > idle_cap)
+				freq = idle_cap;
+		} else if (cluster == RFX_CLUSTER_BIG) {
+			unsigned int idle_cap = rfx_adaptive_floor(policy, 35);
+			if (freq > idle_cap)
+				freq = idle_cap;
+		}
+	}
+
+	/* 12. Resolve to driver-supported frequency */
 	freq = cpufreq_driver_resolve_freq(policy, freq);
 
 	return freq;
@@ -1108,24 +1110,7 @@ static void rfx_irq_work(struct irq_work *irq_work)
 static struct rfx_tunables *rfx_global_tunables;
 static DEFINE_MUTEX(rfx_global_tunables_lock);
 
-#define RFX_TUNABLE_UINT(name) \
-static ssize_t name##_show(struct gov_attr_set *attr_set, char *buf) \
-{ \
-	return sysfs_emit(buf, "%u\n", to_rfx_tunables(attr_set)->name); \
-} \
- \
-static ssize_t name##_store(struct gov_attr_set *attr_set, \
-			    const char *buf, size_t count) \
-{ \
-	struct rfx_tunables *t = to_rfx_tunables(attr_set); \
-	unsigned int val; \
-	if (kstrtouint(buf, 10, &val)) \
-		return -EINVAL; \
-	t->name = val; \
-	return count; \
-} \
- \
-static struct governor_attr name = __ATTR_RW(name)
+#define RFX_TUNABLE_UINT(name) static ssize_t name##_show(struct gov_attr_set *attr_set, char *buf) { 	return sysfs_emit(buf, "%u\n", to_rfx_tunables(attr_set)->name); }  static ssize_t name##_store(struct gov_attr_set *attr_set, 			    const char *buf, size_t count) { 	struct rfx_tunables *t = to_rfx_tunables(attr_set); 	unsigned int val; 	if (kstrtouint(buf, 10, &val)) 		return -EINVAL; 	t->name = val; 	return count; }  static struct governor_attr name = __ATTR_RW(name)
 
 static ssize_t up_rate_limit_us_show(struct gov_attr_set *attr_set, char *buf)
 {
@@ -1205,11 +1190,9 @@ static void rfx_propagate_gaming_mode(unsigned int val)
 			if (rfx_pol->tunables)
 				rfx_pol->tunables->gaming_mode = val;
 
-			/* Auto-activate builtin adaptive config when gaming=1 */
 			if (val) {
 				rfx_pol->prev_gaming = true;
 				rfx_pol->need_freq_update = true;
-				/* Builtin sweetspot activation */
 				rfx_pol->fps_state.hint = RFX_BUILTIN_FPS_HINT;
 				rfx_pol->fps_state.actual = RFX_BUILTIN_ACTUAL_FPS;
 				rfx_pol->thermal.headroom = RFX_BUILTIN_THERMAL_HEADROOM;
@@ -1219,7 +1202,6 @@ static void rfx_propagate_gaming_mode(unsigned int val)
 			} else {
 				rfx_pol->prev_gaming = false;
 				rfx_pol->need_freq_update = true;
-				/* Reset to safe defaults when leaving gaming */
 				rfx_pol->fps_state.hint = 0;
 				rfx_pol->fps_state.actual = 0;
 				rfx_pol->thermal.headroom = RFX_THERMAL_HEADROOM_DEFAULT;
@@ -1486,7 +1468,7 @@ static int rfx_init(struct cpufreq_policy *policy)
 		goto fail;
 
 init_state:
-	/* Initialize v4.1 builtin adaptive state */
+	/* Initialize v4.2 builtin adaptive state */
 	rfx_fps_init(&rfx_pol->fps_state);
 	rfx_thermal_init(&rfx_pol->thermal);
 	if (rfx_global_gaming_mode) {
@@ -1563,8 +1545,6 @@ static int rfx_start(struct cpufreq_policy *policy)
 	rfx_pol->avg_util_pct = 0;
 	rfx_pol->prev_gaming = rfx_global_gaming_mode;
 
-
-	/* Re-init frame tracker. Only use builtin 120Hz budget when gaming. */
 	if (rfx_global_gaming_mode) {
 		rfx_pol->fps_state.hint = RFX_BUILTIN_FPS_HINT;
 		rfx_pol->fps_state.actual = RFX_BUILTIN_ACTUAL_FPS;
@@ -1645,7 +1625,7 @@ static int __init vorpal_gov_init(void)
 {
 	pr_info("%s %s by %s\n", CPUFREQ_VORPAL_PROGNAME,
 		CPUFREQ_VORPAL_VERSION, CPUFREQ_VORPAL_AUTHOR);
-	pr_info("Adaptive|Builtin120FPS|NoSoftCapGaming|Big95|Prime98|Thermal20\n");
+	pr_info("Sustained120|EarlyBoost|UnlockedBig|PowerOpt|Thermal25\n");
 	return cpufreq_register_governor(&vorpal_gov);
 }
 
