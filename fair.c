@@ -44,8 +44,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 5000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
+unsigned int sysctl_sched_latency			= 24000000;
+static unsigned int normalized_sysctl_sched_latency	= 24000000;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 5000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
@@ -77,8 +77,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 800000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 800000ULL;
+unsigned int sysctl_sched_min_granularity			= 3000000;
+static unsigned int normalized_sysctl_sched_min_granularity	= 3000000;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_min_granularity			= 750000ULL;
  static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
@@ -94,7 +94,7 @@ static unsigned int sched_nr_latency = 8;
  * After fork, child runs first. If set to 0 (default) then
  * parent will (try to) run first.
  */
-unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
+unsigned int sysctl_sched_child_runs_first __read_mostly = 0;
 
 /*
  * SCHED_OTHER wake-up granularity.
@@ -107,14 +107,14 @@ unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 1500000ULL;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1500000ULL;
+unsigned int sysctl_sched_wakeup_granularity			= 4000000;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 4000000;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 800000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 100000;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
@@ -8175,7 +8175,7 @@ static struct task_struct *detach_one_task(struct lb_env *env)
 	return NULL;
 }
 
-static const unsigned int sched_nr_migrate_break = 32;
+static const unsigned int sched_nr_migrate_break = 16;
 
 /*
  * detach_tasks() -- tries to detach up to imbalance load/util/tasks from
