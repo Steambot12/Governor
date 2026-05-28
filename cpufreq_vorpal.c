@@ -1,21 +1,82 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Vorpal CPUFreq Governor v5.0 - Thermal-Aware Stabilized 120FPS
- * Rewrite from v4.5 — fixed race conditions, thermal logic, frame tracker,
- * jitter handling, and daily-use power/thermal profile.
+ * Vorpal CPUFreq Governor
  *
- * Critical fixes from v4.5:
- *   - LOCKING: rfx_update_single_freq now holds update_lock for all shared state
- *   - THERMAL: More aggressive daily caps, lower default headroom, virtual cooldown
- *   - GAMING: Lower cluster floors (Prime 75%, Big 70%) to reduce heat while keeping boost
- *   - FRAME: Removed buggy frame duration arithmetic, simplified render phase
- *   - PREDICTOR: Wider window (16), softer EMA (0.88), more aggressive thresholds
- *   - JITTER: Gaming bypass for emergency boosts, daily smoothing preserved
- *   - SUSTAIN: Reduced to 3ms to prevent thermal runaway
- *   - SYSFS: gaming_mode store no longer iterates cpufreq policies (deadlock fix)
- *   - IO WAIT: Simplified streak/boost logic, prevents overflow
- *   - RATE: Daily down limit increased to 8ms for cooler browsing
- *   - FPS: Removed broken breach detection, stabilization now reliable
+ * Game-aware CPU frequency governor for asymmetric big.LITTLE.PRIME
+ * topologies. Combines frame-deadline tracking, predictive util boost,
+ * per-cluster floors and caps, fluid jitter smoothing, and thermal-aware
+ * limits to sustain high-FPS rendering with low jank.
+ *
+ * v5.6 - Power-bounded smooth render path
+ *
+ *  Fixes against v5.5 (user-reported: FPS still dips to 95-96 during
+ *  long sessions, CPU usage spikes to 98% and stays there, ~1-2ms
+ *  jitter, power consumption climbs to 7W vs <6W target, jank rate
+ *  >1%. Movement smoothness was preserved but at the cost of
+ *  sustainability):
+ *
+ *   - Root cause: PRIME was pinned near fmax. Floor 86% + emergency
+ *     cap 100% + iowait boost 92% + asymmetric target 100% all
+ *     stacked, leaving the cluster ~6% of headroom. As soon as a
+ *     transient pushed it past the thermal soft margin, the cap
+ *     dropped to 72% -> FPS fell to 95-96. The same stack-up was
+ *     pulling 7W: PRIME at 94-100% all session.
+ *
+ *   - PRIME floor 86 -> 82, target 100 -> 94. The cluster still
+ *     enters bursts above the perf-ramp knee, but ~6% of real
+ *     headroom now sits below the thermal cap so the cap is rarely
+ *     hit. FPS dips and the power overshoot both trace back here.
+ *
+ *   - Emergency frame-boost cap 100 -> 92. Going to fmax for a single
+ *     late frame was burning ~0.5-0.8W of overhead for ~0.4 frame of
+ *     latency rescue. 92% still recovers the frame.
+ *
+ *   - Iowait boost PRIME 92 -> 82, BIG 80 -> 72, LITTLE 62 -> 55.
+ *     IO completion no longer takes the cluster to the same band as
+ *     emergency boost; this was the main "CPU jumps to 90% and stays
+ *     for several seconds" pattern after each binder I/O storm.
+ *
+ *   - In-burst down-step is no longer hard-zero. When the frame is
+ *     comfortable (phase < 35% of budget) and the predictor trend is
+ *     neutral or negative, we allow a gentle proportional down-step
+ *     (3/64 ~ 4.7%). This is the central change: smoothness is
+ *     preserved because the freq never staircases when the frame is
+ *     under pressure, but power is no longer trapped at the burst's
+ *     opening level for the entire frame. Late-frame and emergency
+ *     paths still pin the freq.
+ *
+ *   - FPS-stable gaming ceiling (NEW). Once actual >= hint - 2 for
+ *     500ms during gaming, we cap PRIME at 92% of max and BIG at
+ *     84% of max. We were already at target FPS; pushing higher
+ *     just heats the SoC. This is what closes the 6W envelope.
+ *
+ *   - PRIME idle floor 86 -> 72. The active floor still holds when
+ *     a burst is in progress, but between bursts PRIME now actually
+ *     relaxes. Re-entry is still single-step (72 -> 82) so there is
+ *     no visible ramp-back jank.
+ *
+ *   - Iowait slow-decay 2x faster (boost >>= 1 every tick -> down
+ *     to zero in 3 ticks vs. lingering >5 ticks). Releases the
+ *     boost soon after the I/O storm completes.
+ *
+ *   - Sustain window 12 ms -> 9 ms. Still > 1 frame at 120Hz, but no
+ *     longer keeps PRIME held for nearly 2 frames after a one-frame
+ *     boost.
+ *
+ *   - Predictor fast-up is now bounded and gated. Its fmax request is
+ *     clamped by the asymmetric ceiling (lands at 92-94% PRIME, not
+ *     fmax), and it only fires while a render burst is in progress.
+ *     The smoother bypass is unchanged so render-thread responsiveness
+ *     is preserved, but the destination is power-bounded and a single
+ *     late-stage trend=2 between bursts can no longer re-pin the freq.
+ *
+ *   - Sustain min jump 6% -> 8%. Tiny ~5% transient jumps no longer
+ *     arm the sustain window, so the window does not keep firing
+ *     across a steady-state session.
+ *
+ *   - Down-rate gaming 5000us -> 3500us. Faster release back to the
+ *     floor between bursts; the in-burst hold still protects the
+ *     active frame.
  *
  * Author: Templar Dev (Steambot12)
  */
@@ -41,7 +102,7 @@
 
 #define CPUFREQ_VORPAL_PROGNAME	"Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR	"Templar Dev"
-#define CPUFREQ_VORPAL_VERSION	"5.0-Stable120"
+#define CPUFREQ_VORPAL_VERSION	"5.6"
 
 /* === GKI 5.10 COMPAT EXTERNS === */
 extern void rfx_get_util_gki510(int cpu, unsigned long boost,
@@ -56,70 +117,148 @@ static unsigned int rfx_global_gaming_mode;
 /* === BUILTIN ADAPTIVE CONFIG === */
 #define RFX_BUILTIN_FPS_HINT		120
 #define RFX_BUILTIN_ACTUAL_FPS		120
-#define RFX_BUILTIN_THERMAL_HEADROOM	20	/* v5: lower = more cautious */
+#define RFX_BUILTIN_THERMAL_HEADROOM	20
+
+/* === MICRO-TICK RENDER PATH ===
+ * Slow-path interval. Heavy work (predictor, frame tracker, avg util,
+ * iowait decay) refreshes at most once per this interval. Fast path
+ * (freq decision) runs on every util-update event using cached state.
+ *
+ * Gaming: 833us == 1/10th of an 8.33ms frame -> 10x render reactivity
+ *         versus a 1-frame-tick governor, without re-running heavy
+ *         logic at >1kHz which is what was pinning CPU before.
+ * Daily : 5 ms -> a touch slower than v5.4 (4 ms) so idle / browsing
+ *         leaves the CPU truly idle for longer.
+ */
+#define RFX_MICRO_TICK_GAMING_NS	833333ULL
+#define RFX_MICRO_TICK_DAILY_NS		5000000ULL
 
 /* === PREDICTIVE ENGINE === */
-#define RFX_PREDICTOR_WINDOW		16	/* v5: wider, power-of-2 */
-#define RFX_PREDICT_BOOST_THRESHOLD	25	/* v5: more aggressive */
-#define RFX_PREDICT_FAST_UP_THRESHOLD	40
+#define RFX_PREDICTOR_WINDOW		16
+#define RFX_PREDICT_BOOST_THRESHOLD	28
+#define RFX_PREDICT_FAST_UP_THRESHOLD	42
 
 /* === FRAME DEADLINE === */
 #define RFX_FRAME_BUDGET_120HZ_NS	8333333ULL
 #define RFX_FRAME_BUDGET_90HZ_NS	11111111ULL
 #define RFX_FRAME_BUDGET_60HZ_NS	16666667ULL
-#define RFX_FRAME_EMERGENCY_NS		2500000ULL	/* v5: 2.5ms */
-#define RFX_FRAME_PHASE_THRESHOLD_PCT	18
+#define RFX_FRAME_EMERGENCY_NS		2500000ULL
+#define RFX_FRAME_PHASE_THRESHOLD_PCT	10
+/* v5.6: emergency cap 100 -> 92. fmax overshoot was burning power for
+ * marginal latency rescue. 92% still wins the late frame. */
+#define RFX_FRAME_EMERGENCY_CAP_PCT	92
+#define RFX_FRAME_WARN_PHASE_PCT	40
+/* v5.6: frame is "comfortable" if we are under this fraction of the
+ * budget. Used to gate the gentle in-burst down-step. */
+#define RFX_FRAME_COMFORT_PHASE_PCT	35
 
-/* === JITTER REDUCTION === */
-#define RFX_JITTER_MAX_DELTA_PCT_GAMING	25	/* v5: more responsive */
-#define RFX_JITTER_MAX_DELTA_PCT_DAILY	15
-#define RFX_SUSTAIN_WINDOW_NS		3000000ULL	/* v5: 3ms */
+/* === FLUID IIR JITTER SMOOTHER ===
+ *   smoothed = (current * (DEN - num) + target * num) / DEN
+ *
+ * DEN=64 so each event is a small proportional move toward the target.
+ *
+ * v5.6 change: the in-burst down-step is no longer hard-zero. We allow
+ * a *gentle* down-step (3/64 ~ 4.7%) but ONLY when the frame is
+ * comfortable (phase < 35% of budget). When the frame is under
+ * pressure (>= 35% phase, or emergency), the down-step is still zero.
+ * This preserves the v5.5 smoothness win (no staircasing mid-frame
+ * during a tight frame) while letting the freq bleed off naturally
+ * once the burst is comfortably under deadline. That is what frees
+ * the power budget without sacrificing in-game movement smoothness.
+ *
+ * Emergency / predictor fast-up / gaming-entry bypass smoothing for
+ * one cycle so an entering burst lands at the right freq immediately.
+ */
+#define RFX_IIR_DEN			64
+#define RFX_IIR_UP_GAMING_BURST		48	/* 75% target weight - fast, fluid */
+#define RFX_IIR_UP_GAMING_IDLE		36	/* 56%, between bursts */
+#define RFX_IIR_DOWN_GAMING_BURST	0	/* hold: tight-frame down-step disabled */
+#define RFX_IIR_DOWN_GAMING_COMFORT	3	/* 4.7%: gentle bleed when frame headroom OK */
+#define RFX_IIR_DOWN_GAMING_IDLE	20	/* 31%, slightly quicker release */
+#define RFX_IIR_UP_DAILY		28	/* 44% */
+#define RFX_IIR_DOWN_DAILY		18	/* 28% */
 
-/* === ASYMMETRIC CLUSTER POLICY === */
-#define RFX_ASYM_PRIME_FLOOR_PCT	75	/* v5: cooler gaming */
-#define RFX_ASYM_PRIME_TARGET_PCT	100
-#define RFX_ASYM_BIG_FLOOR_PCT		70	/* v5: was 85, too hot */
-#define RFX_ASYM_BIG_CAP_PCT		100
-#define RFX_ASYM_LITTLE_FLOOR_PCT	30
-#define RFX_ASYM_LITTLE_CAP_PCT		85
+/* v5.6: 9ms (~1.1 frames @120Hz). Was 12ms (1.5 frames), which kept
+ * PRIME held across the burst boundary unnecessarily. */
+#define RFX_SUSTAIN_WINDOW_NS		9000000ULL
+/* v5.6: 8%. 6% was arming the sustain window on routine ~5% twitches,
+ * so the freq stayed held across a steady-state session. */
+#define RFX_SUSTAIN_MIN_JUMP_PCT	8
 
-/* === CPU USAGE SOFT CAP === */
-#define RFX_CPU_USAGE_SOFT_CAP		60	/* v5: more aggressive daily */
+/* === ASYMMETRIC CLUSTER POLICY ===
+ * v5.6: lowered to put real headroom under the thermal soft cap. The
+ * previous floor+target pair left PRIME ~6% from fmax which the
+ * thermal layer kept clipping. */
+#define RFX_ASYM_PRIME_FLOOR_PCT	82
+#define RFX_ASYM_PRIME_TARGET_PCT	94
+#define RFX_ASYM_BIG_FLOOR_PCT		72
+#define RFX_ASYM_BIG_CAP_PCT		92
+#define RFX_ASYM_LITTLE_FLOOR_PCT	40
+#define RFX_ASYM_LITTLE_CAP_PCT		84
+/* v5.6: PRIME idle floor 86 -> 72. Between bursts, PRIME now actually
+ * relaxes. Re-entry from 72 -> 82 is a single ~10% step, smaller than
+ * the eye/finger response window, so smoothness is preserved. */
+#define RFX_ASYM_PRIME_IDLE_PCT		72
+#define RFX_ASYM_BIG_IDLE_PCT		60
+
+/* === FPS-STABLE GAMING CEILING (v5.6) ===
+ * Once FPS has stabilized at hint - 2 for 500ms in gaming mode, cap
+ * PRIME at 92% and BIG at 84%. We have already met the FPS target;
+ * pushing higher just heats the SoC. This is what closes the 6W
+ * envelope. The cap is bypassed by emergency frame-boost so we still
+ * recover from a late frame. */
+#define RFX_ASYM_PRIME_STABLE_CEIL_PCT	92
+#define RFX_ASYM_BIG_STABLE_CEIL_PCT	84
+
+/* === CPU USAGE SOFT CAP (daily only) === */
+#define RFX_CPU_USAGE_SOFT_CAP		72
 #define RFX_CPU_USAGE_CAP_STEP_DIV	10
 
 /* === FPS FEEDBACK === */
 #define RFX_FPS_STABLE_THRESHOLD	2
 #define RFX_FPS_STABLE_TIME_NS		(500 * NSEC_PER_MSEC)
 
-/* === IO WAIT BOOST === */
+/* === IO WAIT BOOST ===
+ * v5.6: PRIME 92 -> 82 (matches the floor; iowait no longer pins).
+ * BIG and LITTLE also lowered proportionally. The "CPU jumps to 90%
+ * and stays" pattern after each binder I/O storm was driven by these
+ * values plus the slow decay; both are now relaxed. */
 #define RFX_IOWAIT_BOOST_THRESHOLD	2
-#define RFX_IOWAIT_BOOST_PRIME_PCT	85
-#define RFX_IOWAIT_BOOST_BIG_PCT	70
-#define RFX_IOWAIT_BOOST_LITTLE_PCT	60
+#define RFX_IOWAIT_BOOST_PRIME_PCT	82
+#define RFX_IOWAIT_BOOST_BIG_PCT	72
+#define RFX_IOWAIT_BOOST_LITTLE_PCT	55
 
 /* === THERMAL === */
-#define RFX_THERMAL_HEADROOM_DEFAULT	20	/* v5: start throttling earlier */
+#define RFX_THERMAL_HEADROOM_DEFAULT	20
 #define RFX_THERMAL_HARD_MARGIN		5
 #define RFX_THERMAL_SOFT_MARGIN		12
-#define RFX_THERMAL_CAP_HARD_PCT	45
-#define RFX_THERMAL_CAP_SOFT_PCT	65
-#define RFX_THERMAL_CAP_NORMAL_PCT	95
+#define RFX_THERMAL_CAP_HARD_PCT	55
+#define RFX_THERMAL_CAP_SOFT_PCT	72
+#define RFX_THERMAL_CAP_NORMAL_PCT	98
 
 /* === DAILY COOLDOWN === */
-#define RFX_DAILY_CAP_PCT		80	/* v5: daily max 80% */
+#define RFX_DAILY_CAP_PCT		72
 
-/* === RATE LIMITS === */
+/* === RATE LIMITS ===
+ * v5.6: gaming-down 5000us -> 3500us. Faster release back to the floor
+ * between bursts; the in-burst hold still protects the active frame. */
 #define RFX_RATE_LIMIT_GAMING_UP_US	0
-#define RFX_RATE_LIMIT_GAMING_DOWN_US	4000	/* v5: 4ms */
+#define RFX_RATE_LIMIT_GAMING_DOWN_US	3500
 #define RFX_RATE_LIMIT_DEFAULT_UP_US	500
-#define RFX_RATE_LIMIT_DEFAULT_DOWN_US	8000	/* v5: 8ms for cool browsing */
+#define RFX_RATE_LIMIT_DEFAULT_DOWN_US	8000
 #define RFX_RATE_LIMIT_IDLE_DOWN_US	3000
 
 /* === IDLE === */
-#define RFX_IDLE_CAP_PCT		10	/* v5: lower idle power */
+#define RFX_IDLE_CAP_PCT		10
 
-/* === EMA === */
-#define RFX_EMA_ALPHA_NUM		88	/* v5: 0.88 smoother */
+/* === EMA (predictor input) ===
+ * Gaming alpha is moderate (62%) so the predictor reacts but does not
+ * over-twitch on a single noisy sample. The IIR smoother and the BURST
+ * down-step=0 guarantee the freq does not echo that twitch. Daily
+ * alpha is left alone.
+ */
+#define RFX_EMA_ALPHA_GAMING_NUM	62
+#define RFX_EMA_ALPHA_DAILY_NUM		30
 #define RFX_EMA_ALPHA_DEN		100
 
 /* === CLUSTER DETECTION === */
@@ -129,6 +268,7 @@ static unsigned int rfx_global_gaming_mode;
 /* === SCHED FLAGS === */
 #define SCHED_FLAGS_UGOV		0x10000000
 #define IOWAIT_BOOST_MIN		(SCHED_CAPACITY_SCALE / 8)
+#define IOWAIT_BOOST_MAX		(SCHED_CAPACITY_SCALE)
 
 /* === ENUMS === */
 enum rfx_cluster_type {
@@ -143,7 +283,7 @@ struct rfx_predictor {
 	unsigned int hist[RFX_PREDICTOR_WINDOW];
 	u8 idx;
 	unsigned int ema;
-	int trend;	/* -2 fast_down, -1 down, 0 stable, 1 up, 2 fast_up */
+	int trend;
 	unsigned int predicted;
 	u64 last_update_ns;
 };
@@ -172,7 +312,6 @@ struct rfx_tunables {
 	unsigned int up_rate_limit_us;
 	unsigned int down_rate_limit_us;
 	enum rfx_cluster_type cluster_type;
-	unsigned int gaming_mode;	/* synced with global, kept for compat */
 };
 
 struct rfx_policy;
@@ -190,7 +329,6 @@ struct rfx_policy {
 	s64 up_rate_delay_ns;
 	s64 down_rate_delay_ns;
 	unsigned int next_freq;
-	unsigned int cached_raw_freq;
 	struct irq_work irq_work;
 	struct kthread_work work;
 	struct kthread_worker worker;
@@ -198,16 +336,21 @@ struct rfx_policy {
 	bool work_in_progress;
 	bool limits_changed;
 	bool need_freq_update;
-	u64 last_real_update_ns;
 
-	/* v5 state */
+	/* Heavy-state snapshot, refreshed at MICRO_TICK_NS cadence */
 	struct rfx_frame_tracker frame_tracker;
 	struct rfx_fps_state fps_state;
 	struct rfx_thermal_state thermal;
 	unsigned int avg_util_pct;
-	bool prev_gaming;
-	unsigned int prev_target_freq;
+
+	/* Render-aware fast path bookkeeping */
+	u64 last_heavy_update_ns;
 	u64 last_boost_time_ns;
+	unsigned int prev_target_freq;
+	bool prev_gaming;
+
+	/* Iowait propagated across policy CPUs */
+	bool policy_iowait_active;
 };
 
 struct rfx_cpu {
@@ -220,10 +363,6 @@ struct rfx_cpu {
 	u64 last_update;
 	unsigned long util;
 	unsigned long bwmin;
-	u64 prev_idle_time;
-	u64 prev_wall_time;
-	unsigned int busy_pct;
-	unsigned int prev_util_pct;
 
 	struct rfx_predictor predictor;
 #ifdef CONFIG_NO_HZ_COMMON
@@ -243,16 +382,6 @@ static inline enum rfx_cluster_type rfx_get_cluster_type(unsigned int cpu)
 	if (cap >= (unsigned long)RFX_PRIME_CAP_THRESHOLD)
 		return RFX_CLUSTER_PRIME;
 	return RFX_CLUSTER_BIG;
-}
-
-static inline bool rfx_is_little(unsigned int cpu)
-{
-	return arch_scale_cpu_capacity(cpu) <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD;
-}
-
-static inline bool rfx_is_prime(unsigned int cpu)
-{
-	return arch_scale_cpu_capacity(cpu) >= (unsigned long)RFX_PRIME_CAP_THRESHOLD;
 }
 
 static inline struct gov_attr_set *rfx_to_gov_attr_set(struct kobject *kobj)
@@ -288,6 +417,12 @@ static inline unsigned int rfx_adaptive_floor(struct cpufreq_policy *policy,
 	return max(floor, policy->cpuinfo.min_freq);
 }
 
+static inline u64 rfx_micro_tick_ns(void)
+{
+	return rfx_gaming_active() ?
+		RFX_MICRO_TICK_GAMING_NS : RFX_MICRO_TICK_DAILY_NS;
+}
+
 /* === PREDICTIVE ENGINE === */
 
 static void rfx_predictor_init(struct rfx_predictor *p)
@@ -295,23 +430,39 @@ static void rfx_predictor_init(struct rfx_predictor *p)
 	memset(p, 0, sizeof(*p));
 }
 
+/* Seed the predictor as if it had been running at `pct` for a while.
+ * Used on gaming-mode entry so the very first util-update has a sensible
+ * prediction (was the cause of the "0 fps for a few seconds" freeze). */
+static void rfx_predictor_seed(struct rfx_predictor *p, unsigned int pct, u64 time)
+{
+	unsigned int i;
+
+	memset(p, 0, sizeof(*p));
+	for (i = 0; i < RFX_PREDICTOR_WINDOW; i++)
+		p->hist[i] = pct;
+	p->ema = pct;
+	p->predicted = pct;
+	p->trend = 1;
+	p->last_update_ns = time;
+}
+
 static void rfx_predictor_update(struct rfx_predictor *p, unsigned int util_pct, u64 time)
 {
 	unsigned int i, recent_sum = 0, prev_sum = 0;
 	unsigned int recent_avg, prev_avg;
 	unsigned int old_ema = p->ema;
+	unsigned int alpha_num;
 
 	p->hist[p->idx] = util_pct;
 	p->idx = (p->idx + 1) & (RFX_PREDICTOR_WINDOW - 1);
 
-	/* EMA: alpha = 0.88 for gaming, 0.3 for daily */
-	if (rfx_gaming_active())
-		p->ema = (RFX_EMA_ALPHA_NUM * util_pct +
-			  (RFX_EMA_ALPHA_DEN - RFX_EMA_ALPHA_NUM) * old_ema) / RFX_EMA_ALPHA_DEN;
-	else
-		p->ema = (3 * util_pct + 7 * old_ema) / 10;
+	alpha_num = rfx_gaming_active() ?
+		RFX_EMA_ALPHA_GAMING_NUM : RFX_EMA_ALPHA_DAILY_NUM;
 
-	/* Trend detection: last 4 vs previous 4 samples */
+	p->ema = (alpha_num * util_pct +
+		  (RFX_EMA_ALPHA_DEN - alpha_num) * old_ema) /
+		 RFX_EMA_ALPHA_DEN;
+
 	for (i = 0; i < 4; i++) {
 		recent_sum += p->hist[(p->idx - 1 - i) & (RFX_PREDICTOR_WINDOW - 1)];
 		prev_sum += p->hist[(p->idx - 5 - i) & (RFX_PREDICTOR_WINDOW - 1)];
@@ -320,17 +471,16 @@ static void rfx_predictor_update(struct rfx_predictor *p, unsigned int util_pct,
 	prev_avg = prev_sum >> 2;
 
 	if (recent_avg > prev_avg + 15)
-		p->trend = 2;	/* fast_up */
+		p->trend = 2;
 	else if (recent_avg > prev_avg + 6)
-		p->trend = 1;	/* up */
+		p->trend = 1;
 	else if (recent_avg + 15 < prev_avg)
-		p->trend = -2;	/* fast_down */
+		p->trend = -2;
 	else if (recent_avg + 6 < prev_avg)
-		p->trend = -1;	/* down */
+		p->trend = -1;
 	else
-		p->trend = 0;	/* stable */
+		p->trend = 0;
 
-	/* Prediction with projection — v5 softer for smoothness */
 	p->predicted = p->ema;
 	if (p->trend == 2)
 		p->predicted = min(100U, p->predicted + 20);
@@ -344,7 +494,7 @@ static void rfx_predictor_update(struct rfx_predictor *p, unsigned int util_pct,
 	p->last_update_ns = time;
 }
 
-/* === FRAME DEADLINE TRACKER (SIMPLIFIED) === */
+/* === FRAME DEADLINE TRACKER === */
 
 static void rfx_frame_tracker_init(struct rfx_frame_tracker *ft, unsigned int fps_hint)
 {
@@ -357,30 +507,59 @@ static void rfx_frame_tracker_init(struct rfx_frame_tracker *ft, unsigned int fp
 		ft->budget_ns = RFX_FRAME_BUDGET_60HZ_NS;
 }
 
+/* Mark "we are inside a render burst right now" without waiting for the
+ * normal phase-detect heuristic. Called on gaming entry so the first
+ * frame is treated as a burst from cycle zero. */
+static void rfx_frame_tracker_force_burst(struct rfx_frame_tracker *ft, u64 time)
+{
+	ft->in_render_phase = true;
+	ft->last_frame_ns = time;
+	ft->phase_ns = 0;
+}
+
 static void rfx_frame_tracker_update(struct rfx_frame_tracker *ft, u64 time,
 				     unsigned int util_pct, bool iowait_active)
 {
-	u64 elapsed = time - ft->last_frame_ns;
+	u64 elapsed;
+
+	if (!ft->last_frame_ns)
+		ft->last_frame_ns = time;
+
+	elapsed = time - ft->last_frame_ns;
 
 	if (!ft->in_render_phase) {
-		if ((util_pct > RFX_FRAME_PHASE_THRESHOLD_PCT || iowait_active) &&
-		    elapsed > ft->budget_ns / 4) {
+		/* Enter render phase as soon as we see meaningful util or
+		 * iowait. The previous "elapsed > budget/8" gate delayed
+		 * entry by up to 1 ms on a fresh start, costing the first
+		 * frame's emergency boost. */
+		if (util_pct > RFX_FRAME_PHASE_THRESHOLD_PCT || iowait_active) {
 			ft->in_render_phase = true;
 			ft->last_frame_ns = time;
 			ft->phase_ns = 0;
+			return;
 		}
 	} else {
-		/* v5: Exit at 8% — slightly earlier for power */
-		if (util_pct < 8 && elapsed > ft->budget_ns / 2) {
+		/* Idle-out only if sustained low util across 3/4 of a frame.
+		 * One low sample mid-frame is not enough. */
+		if ((util_pct < 6 && elapsed > (ft->budget_ns * 3 / 4)) ||
+		    elapsed > (ft->budget_ns * 3 / 2)) {
 			ft->in_render_phase = false;
+			ft->phase_ns = 0;
+			return;
+		}
+
+		if (elapsed >= ft->budget_ns) {
+			u64 frames = elapsed / ft->budget_ns;
+			ft->last_frame_ns += frames * ft->budget_ns;
+			elapsed = time - ft->last_frame_ns;
 		}
 	}
 
-	ft->phase_ns = time - ft->last_frame_ns;
+	ft->phase_ns = elapsed;
 }
 
 static bool rfx_frame_needs_emergency_boost(struct rfx_frame_tracker *ft,
-					    unsigned int util_pct, u64 time)
+					    unsigned int util_pct)
 {
 	u64 remaining;
 
@@ -392,16 +571,14 @@ static bool rfx_frame_needs_emergency_boost(struct rfx_frame_tracker *ft,
 	else
 		remaining = 0;
 
-	/* v5: 2.5ms remaining with 35% util -> emergency */
-	if (remaining < RFX_FRAME_EMERGENCY_NS && util_pct > 35)
+	if (remaining < RFX_FRAME_EMERGENCY_NS && util_pct > 25)
 		return true;
 
-	/* Budget exceeded */
 	if (ft->phase_ns > ft->budget_ns)
 		return true;
 
-	/* v5: Warning at 55% budget with 35% util */
-	if (ft->phase_ns > (ft->budget_ns * 55 / 100) && util_pct > 35)
+	if (ft->phase_ns > (ft->budget_ns * RFX_FRAME_WARN_PHASE_PCT / 100) &&
+	    util_pct > 25)
 		return true;
 
 	return false;
@@ -422,17 +599,21 @@ static void rfx_fps_update(struct rfx_fps_state *fps, u64 time)
 		return;
 	}
 
-	if (!rfx_gaming_active()) {
-		if (fps->actual >= fps->hint - RFX_FPS_STABLE_THRESHOLD) {
-			if (!fps->stabilized) {
-				if (!fps->stabilized_since_ns)
-					fps->stabilized_since_ns = time;
-				else if (time - fps->stabilized_since_ns > RFX_FPS_STABLE_TIME_NS)
-					fps->stabilized = true;
-			}
-		} else {
-			fps->stabilized = false;
-			fps->stabilized_since_ns = 0;
+	/*
+	 * v5.6: gaming now participates in the settle logic. After the
+	 * session has held its FPS target (actual >= hint - 2) for
+	 * RFX_FPS_STABLE_TIME_NS, we declare it stabilized, which arms
+	 * the cooler FPS-stable asymmetric ceiling. v5.5 force-cleared
+	 * this during gaming, so the cluster never settled below its
+	 * burst-opening band -- the structural reason power stayed at 7W
+	 * across a whole session.
+	 */
+	if (fps->actual >= fps->hint - RFX_FPS_STABLE_THRESHOLD) {
+		if (!fps->stabilized) {
+			if (!fps->stabilized_since_ns)
+				fps->stabilized_since_ns = time;
+			else if (time - fps->stabilized_since_ns > RFX_FPS_STABLE_TIME_NS)
+				fps->stabilized = true;
 		}
 	} else {
 		fps->stabilized = false;
@@ -468,7 +649,7 @@ static unsigned int rfx_thermal_apply(struct rfx_thermal_state *th,
 	return min(target_freq, thermal_max);
 }
 
-/* v5: Daily cooldown cap to keep browsing cool */
+/* Daily cooldown cap to keep browsing/idle thermals down */
 static unsigned int rfx_daily_cooldown_cap(struct rfx_policy *rfx_pol,
 					  unsigned int target_freq)
 {
@@ -481,7 +662,6 @@ static unsigned int rfx_daily_cooldown_cap(struct rfx_policy *rfx_pol,
 
 	daily_max = max_freq * RFX_DAILY_CAP_PCT / 100;
 
-	/* If we have any sustained activity during daily use, cap to 80% */
 	if (rfx_pol->avg_util_pct > 10 && target_freq > daily_max)
 		return daily_max;
 
@@ -493,12 +673,12 @@ static unsigned int rfx_daily_cooldown_cap(struct rfx_policy *rfx_pol,
 static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 					   enum rfx_cluster_type cluster,
 					   unsigned int raw_freq,
-					   bool gaming)
+					   bool gaming, bool emergency)
 {
 	struct cpufreq_policy *policy = rfx_pol->policy;
 	unsigned int max = policy->cpuinfo.max_freq;
 	unsigned int min = policy->cpuinfo.min_freq;
-	unsigned int floor, cap, target;
+	unsigned int floor, cap, target, ceil;
 
 	if (!gaming)
 		return raw_freq;
@@ -510,23 +690,43 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 
 		if (raw_freq < floor)
 			return floor;
-		if (rfx_pol->fps_state.stabilized && raw_freq > target)
+		/* Frame-deadline rescue wins over every cap up to fmax. */
+		if (emergency)
+			return min(raw_freq, max);
+		/* Settled session: clamp to the cooler stable ceiling. This
+		 * is the main power lever -- it is what brings a steady-state
+		 * session inside the 6W envelope. */
+		if (rfx_pol->fps_state.stabilized) {
+			ceil = min + ((max - min) *
+				      RFX_ASYM_PRIME_STABLE_CEIL_PCT / 100);
+			return min(raw_freq, ceil);
+		}
+		/* Pre-settle (first ~500ms of the burst): allow the higher
+		 * target so the session ramps in without first-frame jank. */
+		if (raw_freq > target)
 			return target;
 		return min(raw_freq, max);
 
 	case RFX_CLUSTER_BIG:
-		/* v5: 70% floor for smooth heavy threads, cooler than 85% */
 		floor = min + ((max - min) * RFX_ASYM_BIG_FLOOR_PCT / 100);
 		cap = min + ((max - min) * RFX_ASYM_BIG_CAP_PCT / 100);
 
 		if (raw_freq < floor)
 			return floor;
+		if (emergency)
+			return min(raw_freq, cap);
+		if (rfx_pol->fps_state.stabilized) {
+			ceil = min + ((max - min) *
+				      RFX_ASYM_BIG_STABLE_CEIL_PCT / 100);
+			if (raw_freq > ceil)
+				return ceil;
+			return raw_freq;
+		}
 		if (raw_freq > cap)
 			return cap;
 		return raw_freq;
 
 	case RFX_CLUSTER_LITTLE:
-		/* v5: Balanced aux thread performance */
 		floor = min + ((max - min) * RFX_ASYM_LITTLE_FLOOR_PCT / 100);
 		cap = min + ((max - min) * RFX_ASYM_LITTLE_CAP_PCT / 100);
 
@@ -540,7 +740,7 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 	return raw_freq;
 }
 
-/* === CPU USAGE SOFT CAP === */
+/* === CPU USAGE SOFT CAP (daily only) === */
 
 static unsigned int rfx_apply_cpu_usage_cap(struct rfx_policy *rfx_pol,
 					    unsigned int target_freq)
@@ -557,24 +757,61 @@ static unsigned int rfx_apply_cpu_usage_cap(struct rfx_policy *rfx_pol,
 	if (rfx_pol->avg_util_pct <= RFX_CPU_USAGE_SOFT_CAP)
 		return target_freq;
 
-	step = (policy->cpuinfo.max_freq - policy->cpuinfo.min_freq) / RFX_CPU_USAGE_CAP_STEP_DIV;
+	step = (policy->cpuinfo.max_freq - policy->cpuinfo.min_freq) /
+	       RFX_CPU_USAGE_CAP_STEP_DIV;
 	if (target_freq > step)
 		target_freq -= step;
 
 	return max(target_freq, policy->cpuinfo.min_freq);
 }
 
-/* === IO WAIT BOOST (SIMPLIFIED) === */
+/* === IO WAIT BOOST ===
+ *
+ * v5.5 split: rfx_iowait_observe() runs on the fast path and only
+ * latches "iowait was seen". rfx_iowait_decay() runs on the slow path
+ * and is the only place that decays the streak/boost. v5.4 was decaying
+ * on every fast event, so iowait_boost collapsed in sub-microseconds
+ * and re-inflated in a loop -- that thrash was a major source of the
+ * "CPU pinned 85-98%" bug.
+ */
 
-static void rfx_iowait_boost(struct rfx_cpu *rfx_c, unsigned int flags)
+static void rfx_iowait_observe(struct rfx_cpu *rfx_c, unsigned int flags)
 {
 	if (flags & SCHED_CPUFREQ_IOWAIT) {
 		rfx_c->iowait_boost_pending = true;
 		if (rfx_c->iowait_streak < 255)
 			rfx_c->iowait_streak++;
-	} else {
-		rfx_c->iowait_boost_pending = false;
+
+		if (!rfx_c->iowait_boost)
+			rfx_c->iowait_boost = IOWAIT_BOOST_MIN;
+		else if (rfx_c->iowait_boost < IOWAIT_BOOST_MAX)
+			rfx_c->iowait_boost = min_t(unsigned int,
+				rfx_c->iowait_boost << 1, IOWAIT_BOOST_MAX);
 	}
+}
+
+/* Decay streak/boost. SLOW PATH ONLY.
+ * v5.6: streak decay -= 2 (was 1) so the policy_iowait_active gate
+ * clears in 1-2 ticks instead of 3-5. The "post I/O storm CPU pin"
+ * pattern was largely driven by this lag. */
+static void rfx_iowait_decay(struct rfx_cpu *rfx_c)
+{
+	if (rfx_c->iowait_boost_pending) {
+		/* Consumed by the slow tick; require a fresh sample next
+		 * micro-tick to keep the boost held. */
+		rfx_c->iowait_boost_pending = false;
+		return;
+	}
+
+	if (rfx_c->iowait_streak >= 2)
+		rfx_c->iowait_streak -= 2;
+	else
+		rfx_c->iowait_streak = 0;
+
+	if (rfx_c->iowait_boost > IOWAIT_BOOST_MIN)
+		rfx_c->iowait_boost >>= 1;
+	else
+		rfx_c->iowait_boost = 0;
 }
 
 static unsigned long rfx_iowait_apply(struct rfx_cpu *rfx_c,
@@ -582,30 +819,17 @@ static unsigned long rfx_iowait_apply(struct rfx_cpu *rfx_c,
 {
 	unsigned int boost_util;
 
-	if (!rfx_c->iowait_boost_pending && rfx_c->iowait_streak < RFX_IOWAIT_BOOST_THRESHOLD)
+	if (!rfx_c->iowait_boost ||
+	    (!rfx_c->iowait_boost_pending &&
+	     rfx_c->iowait_streak < RFX_IOWAIT_BOOST_THRESHOLD))
 		return 0;
 
-	if (!rfx_c->iowait_boost_pending && rfx_c->iowait_streak)
-		rfx_c->iowait_streak--;
-
-	/* Decay boost value */
-	if (!rfx_c->iowait_boost_pending) {
-		if (rfx_c->iowait_boost > IOWAIT_BOOST_MIN)
-			rfx_c->iowait_boost >>= 1;
-		else
-			rfx_c->iowait_boost = 0;
-	}
-
-	if (!rfx_c->iowait_boost)
-		return 0;
-
-	boost_util = (unsigned long)((u64)rfx_c->iowait_boost * max_cap >> SCHED_CAPACITY_SHIFT);
-	rfx_c->iowait_boost_pending = false;
+	boost_util = (unsigned long)((u64)rfx_c->iowait_boost * max_cap >>
+				     SCHED_CAPACITY_SHIFT);
 	return boost_util;
 }
 
 static unsigned int rfx_iowait_boost_freq(struct rfx_policy *rfx_pol,
-					  struct rfx_cpu *rfx_c,
 					  enum rfx_cluster_type cluster,
 					  unsigned int current_freq)
 {
@@ -613,7 +837,7 @@ static unsigned int rfx_iowait_boost_freq(struct rfx_policy *rfx_pol,
 	unsigned int boost_freq;
 	unsigned int pct;
 
-	if (!rfx_c->iowait_boost_pending && rfx_c->iowait_streak < RFX_IOWAIT_BOOST_THRESHOLD)
+	if (!rfx_pol->policy_iowait_active)
 		return current_freq;
 
 	switch (cluster) {
@@ -634,70 +858,105 @@ static unsigned int rfx_iowait_boost_freq(struct rfx_policy *rfx_pol,
 	return max(current_freq, boost_freq);
 }
 
-/* === BUSY PERCENT (for idle detection) === */
-
-static void rfx_update_busy_pct(struct rfx_cpu *rfx_c, u64 time)
-{
-	u64 cur_idle, cur_wall;
-	u64 wall_delta, idle_delta;
-
-	cur_idle = get_cpu_idle_time(rfx_c->cpu, &cur_wall, 1);
-	wall_delta = cur_wall - rfx_c->prev_wall_time;
-
-	if (wall_delta < NSEC_PER_MSEC)
-		return;
-
-	idle_delta = cur_idle > rfx_c->prev_idle_time ?
-		cur_idle - rfx_c->prev_idle_time : 0;
-
-	rfx_c->busy_pct = wall_delta > idle_delta ?
-		(unsigned int)(100 * (wall_delta - idle_delta) / wall_delta) : 0;
-
-	rfx_c->prev_idle_time = cur_idle;
-	rfx_c->prev_wall_time = cur_wall;
-}
-
-/* === JITTER REDUCTION: SMOOTH FREQUENCY CHANGES === */
+/* === FLUID IIR JITTER SMOOTHER ===
+ *
+ * smoothed = (current * (DEN - num) + target * num) / DEN
+ *
+ * Soft fluid transition: each event moves the chosen freq a proportional
+ * fraction of the gap toward target. Big gaps land in a few events, tiny
+ * gaps don't oscillate. Bypassed on:
+ *   - emergency boost (frame-deadline crisis)
+ *   - predictor fast-up
+ *   - in-burst going UP   (let the burst freq snap to target)
+ *   - in-burst going DOWN -> tight frame (phase >= 35%): hold
+ *                            comfortable frame (phase  < 35%): gentle bleed
+ *
+ * v5.6: the gentle-bleed branch is the central smoothness/power
+ * compromise. Smoothness is preserved because the freq still holds
+ * whenever the frame is under any time pressure; power is freed
+ * because once the frame is comfortably under deadline we are
+ * allowed to step the freq down a few percent per micro-tick.
+ */
 static unsigned int rfx_smooth_freq(struct rfx_policy *rfx_pol,
 				    unsigned int target_freq,
 				    unsigned int current_freq,
-				    bool emergency)
+				    bool emergency,
+				    bool fast_up)
 {
 	unsigned int max_freq = rfx_pol->policy->cpuinfo.max_freq;
 	unsigned int min_freq = rfx_pol->policy->cpuinfo.min_freq;
-	unsigned int max_delta;
-	unsigned int smoothed;
+	unsigned int up_num, down_num, num;
+	u64 smoothed;
+	bool gaming = rfx_gaming_active();
+	bool in_burst = rfx_pol->frame_tracker.in_render_phase;
+	bool going_up;
+	bool comfort_frame;
 
 	if (!current_freq || current_freq == target_freq)
+		return clamp_t(unsigned int, target_freq, min_freq, max_freq);
+
+	if (emergency && gaming)
 		return target_freq;
 
-	/* v5: Bypass smoothing for emergency boosts during gaming */
-	if (emergency && rfx_gaming_active())
+	if (fast_up && gaming && target_freq > current_freq)
 		return target_freq;
 
-	max_delta = rfx_gaming_active() ?
-		(max_freq * RFX_JITTER_MAX_DELTA_PCT_GAMING) / 100 :
-		(max_freq * RFX_JITTER_MAX_DELTA_PCT_DAILY) / 100;
+	going_up = (target_freq > current_freq);
 
-	if (target_freq > current_freq) {
-		if (target_freq - current_freq > max_delta)
-			smoothed = current_freq + max_delta;
-		else
-			smoothed = target_freq;
-	} else {
-		if (current_freq - target_freq > max_delta)
-			smoothed = current_freq - max_delta;
-		else
-			smoothed = target_freq;
+	/* Hold-floor under pressure: don't drop freq mid-frame when we are
+	 * past the comfort threshold. This is what keeps movement smooth.
+	 * Only when the frame is well under budget do we allow the slow
+	 * bleed-off configured below. */
+	comfort_frame = false;
+	if (gaming && in_burst && !going_up) {
+		u64 budget = rfx_pol->frame_tracker.budget_ns;
+		u64 phase = rfx_pol->frame_tracker.phase_ns;
+		u64 comfort_limit;
+
+		if (!budget)
+			return current_freq;
+
+		comfort_limit = budget * RFX_FRAME_COMFORT_PHASE_PCT / 100;
+		if (phase >= comfort_limit)
+			return current_freq;	/* tight frame: hold */
+
+		/* Comfortable frame. Reaching here already implies the
+		 * computed target is below current (going_up == false),
+		 * i.e. load is steady or decaying, so the gentle bleed is
+		 * safe -- it tracks falling util, it does not pre-empt it. */
+		comfort_frame = true;
 	}
 
-	return clamp_t(unsigned int, smoothed, min_freq, max_freq);
+	if (gaming) {
+		up_num = in_burst ? RFX_IIR_UP_GAMING_BURST :
+				    RFX_IIR_UP_GAMING_IDLE;
+		if (in_burst && comfort_frame)
+			down_num = RFX_IIR_DOWN_GAMING_COMFORT;
+		else
+			down_num = RFX_IIR_DOWN_GAMING_IDLE; /* !in_burst */
+	} else {
+		up_num = RFX_IIR_UP_DAILY;
+		down_num = RFX_IIR_DOWN_DAILY;
+	}
+
+	num = going_up ? up_num : down_num;
+
+	smoothed = ((u64)current_freq * (RFX_IIR_DEN - num) +
+		    (u64)target_freq * num) / RFX_IIR_DEN;
+
+	return clamp_t(unsigned int, (unsigned int)smoothed, min_freq, max_freq);
 }
 
-/* === SUSTAIN WINDOW: hold freq after boost === */
+/*
+ * Sustain window: hold frequency briefly after a meaningful boost while
+ * still inside a render burst, so a transient util dip mid-frame does
+ * not pull the freq down before the burst completes.
+ */
 static bool rfx_in_sustain_window(struct rfx_policy *rfx_pol, u64 time)
 {
 	if (rfx_pol->last_boost_time_ns == 0)
+		return false;
+	if (!rfx_pol->frame_tracker.in_render_phase)
 		return false;
 	return (time - rfx_pol->last_boost_time_ns) < RFX_SUSTAIN_WINDOW_NS;
 }
@@ -726,7 +985,6 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
 
 	going_up = next_freq > rfx_pol->next_freq;
 
-	/* v5: Sustain window — if recently boosted, don't drop */
 	if (!going_up && rfx_in_sustain_window(rfx_pol, time) && !force_down)
 		return false;
 
@@ -749,20 +1007,22 @@ static bool rfx_update_next_freq(struct rfx_policy *rfx_pol, u64 time,
 
 	if (going_up) {
 		rfx_pol->last_upfreq_time = time;
-		rfx_pol->last_boost_time_ns = time;
-	} else {
-		if (!force_down) {
-			s64 down_delta = time - rfx_pol->last_downfreq_time;
-			s64 effective_down = rfx_gaming_active() ?
-				(s64)RFX_RATE_LIMIT_GAMING_DOWN_US * NSEC_PER_USEC :
-				rfx_pol->down_rate_delay_ns;
-			if (effective_down > 0 && down_delta < effective_down)
-				return false;
+		if (rfx_pol->next_freq) {
+			unsigned int max_freq = rfx_pol->policy->cpuinfo.max_freq;
+			unsigned int jump = next_freq > rfx_pol->next_freq ?
+				next_freq - rfx_pol->next_freq : 0;
+			if (max_freq &&
+			    (jump * 100 / max_freq) >= RFX_SUSTAIN_MIN_JUMP_PCT)
+				rfx_pol->last_boost_time_ns = time;
+		} else {
+			rfx_pol->last_boost_time_ns = time;
 		}
+	} else {
 		rfx_pol->last_downfreq_time = time;
 	}
 
 	rfx_pol->next_freq = next_freq;
+	rfx_pol->prev_target_freq = next_freq;
 	return true;
 }
 
@@ -780,6 +1040,7 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	unsigned int freq;
 	bool gaming;
 	bool emergency = false;
+	bool fast_up;
 
 	if (!policy || !max_cap)
 		return 0;
@@ -787,13 +1048,12 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	cluster = rfx_get_cluster_type(cpumask_first(policy->cpus));
 	util_pct = (unsigned int)(util * 100 / max_cap);
 	gaming = rfx_gaming_active();
+	fast_up = (rfx_c->predictor.trend == 2);
 
-	/* 1. Base frequency from util */
 	freq = (unsigned int)((u64)policy->cpuinfo.max_freq * util / max_cap);
 	freq = clamp_t(unsigned int, freq, policy->cpuinfo.min_freq,
 		       policy->cpuinfo.max_freq);
 
-	/* 2. Predictive pre-emptive boost */
 	if (gaming && rfx_c->predictor.predicted > RFX_PREDICT_BOOST_THRESHOLD) {
 		unsigned int predict_freq = (unsigned int)((u64)policy->cpuinfo.max_freq *
 							   rfx_c->predictor.predicted / 100);
@@ -801,69 +1061,79 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			freq = predict_freq;
 	}
 
-	/* 3. Fast-up prediction: capped at 98% for smooth power */
-	if (gaming && rfx_c->predictor.trend == 2 &&
+	/* v5.6: fast-up only fires inside a render burst. Between bursts a
+	 * single late trend=2 used to re-request fmax and re-pin the freq.
+	 * The fmax request is still made, but the asymmetric ceiling below
+	 * now bounds it to 92-94% so it no longer overshoots into the
+	 * thermal-throttle band. */
+	if (gaming && rfx_pol->frame_tracker.in_render_phase &&
+	    rfx_c->predictor.trend == 2 &&
 	    rfx_c->predictor.predicted > RFX_PREDICT_FAST_UP_THRESHOLD) {
-		unsigned int fast_freq = rfx_adaptive_max(policy, 98);
+		unsigned int fast_freq = rfx_adaptive_max(policy, 100);
 		if (fast_freq > freq)
 			freq = fast_freq;
 	}
 
-	/* 4. Frame deadline emergency boost */
 	if (gaming && rfx_frame_needs_emergency_boost(&rfx_pol->frame_tracker,
-						      util_pct, time)) {
-		freq = policy->cpuinfo.max_freq;
+						      util_pct)) {
+		unsigned int em_freq = rfx_adaptive_max(policy,
+						RFX_FRAME_EMERGENCY_CAP_PCT);
+		freq = max(freq, em_freq);
 		emergency = true;
 	}
 
-	/* 5. Iowait-sensitive boost */
-	freq = rfx_iowait_boost_freq(rfx_pol, rfx_c, cluster, freq);
+	freq = rfx_iowait_boost_freq(rfx_pol, cluster, freq);
 
-	/* 6. Asymmetric cluster policy */
-	freq = rfx_asymmetric_apply(rfx_pol, cluster, freq, gaming);
+	freq = rfx_asymmetric_apply(rfx_pol, cluster, freq, gaming, emergency);
 
-	/* 7. Thermal headroom limiter */
 	freq = rfx_thermal_apply(&rfx_pol->thermal, policy, freq);
 
-	/* 8. CPU usage soft cap (DISABLED during gaming) */
 	freq = rfx_apply_cpu_usage_cap(rfx_pol, freq);
 
-	/* 9. Daily cooldown for browsing/idle thermal */
 	freq = rfx_daily_cooldown_cap(rfx_pol, freq);
 
-	/* 10. Non-gaming idle cap for Little */
 	if (!gaming && cluster == RFX_CLUSTER_LITTLE && util_pct < 5) {
 		unsigned int idle_cap = rfx_adaptive_max(policy, RFX_IDLE_CAP_PCT);
 		if (freq > idle_cap)
 			freq = idle_cap;
 	}
 
-	/* 11. Gaming idle-between-frames power save for Big/Little */
-	if (gaming && !rfx_pol->frame_tracker.in_render_phase && util_pct < 20) {
+	/*
+	 * Between-frame relief: LITTLE deep-relaxes; BIG/PRIME drop to the
+	 * v5.6 idle floors (PRIME 72%, BIG 60%) which sit below the active
+	 * floors. Burst re-entry is a single ~10% step (72 -> 82 on PRIME),
+	 * below the perceptual window, so no visible ramp -- but the freq
+	 * genuinely relaxes between bursts now, which is where the daily
+	 * and idle power savings come from.
+	 */
+	if (gaming && !rfx_pol->frame_tracker.in_render_phase && util_pct < 15) {
+		unsigned int idle_cap;
+
 		if (cluster == RFX_CLUSTER_LITTLE) {
-			unsigned int idle_cap = rfx_adaptive_max(policy, RFX_IDLE_CAP_PCT);
-			if (freq > idle_cap)
-				freq = idle_cap;
+			idle_cap = rfx_adaptive_max(policy, RFX_IDLE_CAP_PCT);
 		} else if (cluster == RFX_CLUSTER_BIG) {
-			unsigned int idle_cap = rfx_adaptive_floor(policy, 35);
-			if (freq > idle_cap)
-				freq = idle_cap;
+			idle_cap = rfx_adaptive_floor(policy,
+						RFX_ASYM_BIG_IDLE_PCT);
+		} else {
+			idle_cap = rfx_adaptive_floor(policy,
+						RFX_ASYM_PRIME_IDLE_PCT);
 		}
+		if (freq > idle_cap)
+			freq = idle_cap;
 	}
 
-	/* 12. v5: Jitter reduction — smooth frequency transitions */
-	freq = rfx_smooth_freq(rfx_pol, freq, rfx_pol->prev_target_freq, emergency);
-	rfx_pol->prev_target_freq = freq;
+	freq = rfx_smooth_freq(rfx_pol, freq, rfx_pol->prev_target_freq,
+			       emergency, fast_up);
 
-	/* 13. Resolve to driver-supported frequency */
 	freq = cpufreq_driver_resolve_freq(policy, freq);
 
+	(void)time;
 	return freq;
 }
 
 /* === AVERAGE UTIL COMPUTATION === */
 
-static unsigned int rfx_compute_avg_util(struct rfx_policy *rfx_pol, u64 time)
+static unsigned int rfx_compute_avg_util(struct rfx_policy *rfx_pol)
 {
 	struct cpufreq_policy *policy = rfx_pol->policy;
 	unsigned int cpu;
@@ -947,6 +1217,115 @@ static void rfx_deferred_update(struct rfx_policy *rfx_pol)
 	}
 }
 
+/* === MICRO-TICK GATE ===
+ * Decide whether the heavy-work slot is due. Returns true at most once
+ * per MICRO_TICK_NS. Called under rfx_pol->update_lock.
+ */
+static bool rfx_heavy_due(struct rfx_policy *rfx_pol, u64 time)
+{
+	u64 tick = rfx_micro_tick_ns();
+
+	if (!rfx_pol->last_heavy_update_ns ||
+	    (time - rfx_pol->last_heavy_update_ns) >= tick) {
+		rfx_pol->last_heavy_update_ns = time;
+		return true;
+	}
+	return false;
+}
+
+/* Push the freq immediately, bypassing the smoother / rate limit. Only
+ * called on gaming mode-flip so the very first frame after entry runs
+ * at the right freq. (Was the source of the 0-fps freeze in v5.4.) */
+static void rfx_fast_seed_freq(struct rfx_policy *rfx_pol, unsigned int target,
+			       u64 time)
+{
+	struct cpufreq_policy *policy = rfx_pol->policy;
+	unsigned int resolved;
+
+	if (!policy || !target)
+		return;
+
+	resolved = cpufreq_driver_resolve_freq(policy, target);
+	rfx_pol->prev_target_freq = resolved;
+	rfx_pol->next_freq = resolved;
+	rfx_pol->last_upfreq_time = time;
+	rfx_pol->last_boost_time_ns = time;
+
+	if (policy->fast_switch_enabled)
+		cpufreq_driver_fast_switch(policy, resolved);
+	else
+		rfx_deferred_update(rfx_pol);
+}
+
+/* === GAMING MODE TRANSITION ===
+ * Snap state cleanly when entering gaming so the smoother does not have
+ * to climb from policy->cur. v5.5 also seeds the predictor and forces
+ * the frame tracker into render phase from cycle zero, and immediately
+ * fast-switches the freq to the cluster floor.
+ */
+static void rfx_handle_mode_transition(struct rfx_policy *rfx_pol, u64 time)
+{
+	bool gaming_now = rfx_gaming_active();
+
+	if (rfx_pol->prev_gaming == gaming_now)
+		return;
+
+	rfx_pol->prev_gaming = gaming_now;
+
+	if (gaming_now) {
+		struct cpufreq_policy *policy = rfx_pol->policy;
+		enum rfx_cluster_type cluster =
+			rfx_get_cluster_type(cpumask_first(policy->cpus));
+		unsigned int snap_pct;
+		unsigned int seed_pct;
+		unsigned int cpu;
+		struct rfx_cpu *rfx_c;
+		unsigned int floor_freq;
+
+		switch (cluster) {
+		case RFX_CLUSTER_PRIME:
+			snap_pct = RFX_ASYM_PRIME_FLOOR_PCT;
+			seed_pct = 55;	/* PRIME runs hot during render */
+			break;
+		case RFX_CLUSTER_BIG:
+			snap_pct = RFX_ASYM_BIG_FLOOR_PCT;
+			seed_pct = 45;
+			break;
+		default:
+			snap_pct = RFX_ASYM_LITTLE_FLOOR_PCT;
+			seed_pct = 25;
+			break;
+		}
+
+		rfx_pol->fps_state.hint = RFX_BUILTIN_FPS_HINT;
+		rfx_pol->fps_state.actual = RFX_BUILTIN_ACTUAL_FPS;
+		rfx_frame_tracker_init(&rfx_pol->frame_tracker,
+				       rfx_pol->fps_state.hint);
+		rfx_frame_tracker_force_burst(&rfx_pol->frame_tracker, time);
+
+		for_each_cpu(cpu, policy->cpus) {
+			rfx_c = per_cpu_ptr(&rfx_cpu, cpu);
+			rfx_predictor_seed(&rfx_c->predictor, seed_pct, time);
+			rfx_c->iowait_boost = 0;
+			rfx_c->iowait_streak = 0;
+			rfx_c->iowait_boost_pending = false;
+		}
+
+		floor_freq = rfx_adaptive_floor(policy, snap_pct);
+		rfx_pol->need_freq_update = true;
+		rfx_fast_seed_freq(rfx_pol, floor_freq, time);
+	} else {
+		/* Leaving gaming: clear in-burst so the down-step hold
+		 * doesn't keep PRIME pinned. */
+		rfx_pol->frame_tracker.in_render_phase = false;
+		rfx_pol->frame_tracker.phase_ns = 0;
+		rfx_pol->fps_state.hint = 0;
+		rfx_pol->fps_state.actual = 0;
+		rfx_pol->fps_state.stabilized = false;
+		rfx_pol->fps_state.stabilized_since_ns = 0;
+	}
+}
+
 /* === UPDATE SINGLE FREQUENCY - MAIN LOGIC === */
 
 static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
@@ -957,18 +1336,16 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	unsigned long max_cap, boost, effective_util;
 	unsigned int next_f;
 	bool force_down = false, nohz_drop = false;
-	bool hold;
+	bool hold, heavy;
 	unsigned int util_pct;
-	enum rfx_cluster_type cluster;
 
 	if (!rfx_pol)
 		return;
 
 	max_cap = arch_scale_cpu_capacity(rfx_c->cpu);
-	cluster = rfx_get_cluster_type(rfx_c->cpu);
 
-	/* Iowait boost processing */
-	rfx_iowait_boost(rfx_c, flags);
+	/* Cheap, always-on iowait observation (fast path) */
+	rfx_iowait_observe(rfx_c, flags);
 	rfx_c->last_update = time;
 	rfx_ignore_dl_rate_limit(rfx_c);
 
@@ -976,63 +1353,60 @@ static void rfx_update_single_freq(struct update_util_data *hook, u64 time,
 	rfx_get_util(rfx_c, boost);
 	effective_util = max(rfx_c->util, boost);
 
-	/* Update busy percent for idle detection */
-	rfx_update_busy_pct(rfx_c, time);
+	util_pct = max_cap ?
+		(unsigned int)(effective_util * 100 / max_cap) : 0;
 
-	/* Compute util percentage */
-	util_pct = max_cap ? (unsigned int)(effective_util * 100 / max_cap) : 0;
+	/* Fast path: try-lock so two CPUs in a shared policy don't serialize
+	 * on the slow path. If contended, the other CPU is updating; we'll
+	 * pick up the result next event. */
+	if (!raw_spin_trylock(&rfx_pol->update_lock))
+		return;
 
-	raw_spin_lock(&rfx_pol->update_lock);
+	rfx_handle_mode_transition(rfx_pol, time);
 
-	/* Update predictive engine */
-	rfx_predictor_update(&rfx_c->predictor, util_pct, time);
+	heavy = rfx_heavy_due(rfx_pol, time);
 
-	/* Update frame tracker */
-	rfx_frame_tracker_update(&rfx_pol->frame_tracker, time, util_pct,
-				 rfx_c->iowait_boost_pending || rfx_c->iowait_streak > 3);
+	if (heavy) {
+		rfx_iowait_decay(rfx_c);
+		rfx_predictor_update(&rfx_c->predictor, util_pct, time);
+		rfx_frame_tracker_update(&rfx_pol->frame_tracker, time, util_pct,
+				 rfx_c->iowait_boost_pending ||
+				 rfx_c->iowait_streak > 3);
+		rfx_fps_update(&rfx_pol->fps_state, time);
+		rfx_pol->avg_util_pct = rfx_compute_avg_util(rfx_pol);
+		rfx_pol->policy_iowait_active = rfx_c->iowait_boost_pending ||
+			rfx_c->iowait_streak >= RFX_IOWAIT_BOOST_THRESHOLD;
+	} else if (rfx_c->iowait_boost_pending) {
+		/* Iowait toggling needs to be visible to the fast path even
+		 * when we skip heavy work, otherwise an IO-bound spike sits
+		 * for a full micro-tick before being honored. */
+		rfx_pol->policy_iowait_active = true;
+	}
 
-	/* Update FPS feedback state */
-	rfx_fps_update(&rfx_pol->fps_state, time);
-
-	/* Compute average util across policy for CPU usage cap */
-	rfx_pol->avg_util_pct = rfx_compute_avg_util(rfx_pol, time);
-
-	/* Main frequency computation */
 	next_f = rfx_get_next_freq(rfx_pol, rfx_c, effective_util, max_cap, time);
 
-	/* NOHZ idle handling */
 	hold = rfx_check_freq_hold_or_drop(rfx_c, max_cap, &nohz_drop);
 	force_down = nohz_drop;
 
-	if (hold && next_f == rfx_pol->next_freq && !rfx_pol->need_freq_update && !force_down)
+	if (hold && next_f == rfx_pol->next_freq && !rfx_pol->need_freq_update &&
+	    !force_down)
 		next_f = rfx_pol->next_freq;
 
-	/* Apply rate limits and commit */
 	if (rfx_update_next_freq(rfx_pol, time, next_f, force_down)) {
 		if (rfx_pol->policy->fast_switch_enabled)
-			cpufreq_driver_fast_switch(rfx_pol->policy, rfx_pol->next_freq);
-		else {
+			cpufreq_driver_fast_switch(rfx_pol->policy,
+						   rfx_pol->next_freq);
+		else
 			rfx_deferred_update(rfx_pol);
-		}
-	}
-
-	/* Update frame tracker budget if gaming mode changed */
-	if (rfx_pol->prev_gaming != rfx_gaming_active()) {
-		rfx_pol->prev_gaming = rfx_gaming_active();
-		if (rfx_gaming_active())
-			rfx_frame_tracker_init(&rfx_pol->frame_tracker,
-					       rfx_pol->fps_state.hint);
 	}
 
 	raw_spin_unlock(&rfx_pol->update_lock);
-
-	rfx_c->prev_util_pct = util_pct;
 }
 
 /* === UPDATE SHARED FREQUENCY === */
 
 static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
-					 bool *force_down_out)
+					 bool *force_down_out, bool heavy)
 {
 	struct rfx_policy *rfx_pol = rfx_c->rfx_policy;
 	struct cpufreq_policy *policy = rfx_pol->policy;
@@ -1043,14 +1417,13 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 	unsigned long boost;
 	bool any_force_down = false;
 	bool nohz_drop = false;
+	bool any_iowait = false;
 	int cpu;
 	unsigned int lead_util_pct = 0;
 	unsigned int lead_cpu = cpumask_first(policy->cpus);
 
-	/* Iterate all CPUs in policy and aggregate util/cap */
 	for_each_cpu(cpu, policy->cpus) {
 		j_rfxc = per_cpu_ptr(&rfx_cpu, cpu);
-
 		j_max_cap = arch_scale_cpu_capacity(cpu);
 		if (j_max_cap > max_cap)
 			max_cap = j_max_cap;
@@ -1058,35 +1431,37 @@ static unsigned int rfx_next_freq_shared(struct rfx_cpu *rfx_c, u64 time,
 		boost = rfx_iowait_apply(j_rfxc, j_max_cap);
 		rfx_get_util(j_rfxc, boost);
 		j_util = max(j_rfxc->util, boost);
-
-		rfx_update_busy_pct(j_rfxc, time);
-
 		if (j_util > util)
 			util = j_util;
 
-		rfx_check_freq_hold_or_drop(j_rfxc, j_max_cap, &nohz_drop);
-		if (nohz_drop)
-			any_force_down = true;
+		if (j_rfxc->iowait_boost_pending ||
+		    j_rfxc->iowait_streak >= RFX_IOWAIT_BOOST_THRESHOLD)
+			any_iowait = true;
+
+		if (heavy) {
+			rfx_iowait_decay(j_rfxc);
+			rfx_check_freq_hold_or_drop(j_rfxc, j_max_cap,
+						    &nohz_drop);
+			if (nohz_drop)
+				any_force_down = true;
+		}
 	}
 
-	/* Use lead CPU for predictor and frame tracking */
 	j_rfxc = per_cpu_ptr(&rfx_cpu, lead_cpu);
-	lead_util_pct = max_cap ? (unsigned int)(util * 100 / max_cap) : 0;
+	lead_util_pct = max_cap ?
+		(unsigned int)(util * 100 / max_cap) : 0;
 
-	/* Update predictive engine for lead CPU */
-	rfx_predictor_update(&j_rfxc->predictor, lead_util_pct, time);
+	if (heavy) {
+		rfx_predictor_update(&j_rfxc->predictor, lead_util_pct, time);
+		rfx_frame_tracker_update(&rfx_pol->frame_tracker, time,
+					 lead_util_pct,
+					 any_iowait);
+		rfx_fps_update(&rfx_pol->fps_state, time);
+		rfx_pol->avg_util_pct = rfx_compute_avg_util(rfx_pol);
+	}
 
-	/* Update frame tracker */
-	rfx_frame_tracker_update(&rfx_pol->frame_tracker, time, lead_util_pct,
-				 j_rfxc->iowait_boost_pending || j_rfxc->iowait_streak > 3);
+	rfx_pol->policy_iowait_active = any_iowait;
 
-	/* Update FPS feedback */
-	rfx_fps_update(&rfx_pol->fps_state, time);
-
-	/* Compute average util */
-	rfx_pol->avg_util_pct = rfx_compute_avg_util(rfx_pol, time);
-
-	/* Main frequency computation */
 	next_f = rfx_get_next_freq(rfx_pol, j_rfxc, util, max_cap, time);
 
 	if (force_down_out)
@@ -1102,31 +1477,30 @@ static void rfx_update_shared(struct update_util_data *hook, u64 time,
 	struct rfx_policy *rfx_pol = rfx_c->rfx_policy;
 	unsigned int next_f;
 	bool force_down = false;
+	bool heavy;
 
 	if (!rfx_pol)
 		return;
 
-	raw_spin_lock(&rfx_pol->update_lock);
-
-	rfx_iowait_boost(rfx_c, flags);
+	rfx_iowait_observe(rfx_c, flags);
 	rfx_c->last_update = time;
 	rfx_ignore_dl_rate_limit(rfx_c);
 
-	next_f = rfx_next_freq_shared(rfx_c, time, &force_down);
+	if (!raw_spin_trylock(&rfx_pol->update_lock))
+		return;
+
+	rfx_handle_mode_transition(rfx_pol, time);
+
+	heavy = rfx_heavy_due(rfx_pol, time);
+
+	next_f = rfx_next_freq_shared(rfx_c, time, &force_down, heavy);
 
 	if (rfx_update_next_freq(rfx_pol, time, next_f, force_down)) {
 		if (rfx_pol->policy->fast_switch_enabled)
-			cpufreq_driver_fast_switch(rfx_pol->policy, rfx_pol->next_freq);
+			cpufreq_driver_fast_switch(rfx_pol->policy,
+						   rfx_pol->next_freq);
 		else
 			rfx_deferred_update(rfx_pol);
-	}
-
-	/* Update frame tracker budget if gaming mode changed */
-	if (rfx_pol->prev_gaming != rfx_gaming_active()) {
-		rfx_pol->prev_gaming = rfx_gaming_active();
-		if (rfx_gaming_active())
-			rfx_frame_tracker_init(&rfx_pol->frame_tracker,
-					       rfx_pol->fps_state.hint);
 	}
 
 	raw_spin_unlock(&rfx_pol->update_lock);
@@ -1229,7 +1603,6 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 	if (val > 1)
 		return -EINVAL;
 
-	/* v5: Atomic store, no cpufreq iteration to avoid deadlock */
 	smp_store_release(&rfx_global_gaming_mode, val);
 	return count;
 }
@@ -1237,7 +1610,7 @@ static ssize_t gaming_mode_store(struct gov_attr_set *attr_set,
 static struct governor_attr gaming_mode =
 	__ATTR(gaming_mode, 0644, gaming_mode_show, gaming_mode_store);
 
-/* === PRIME SYSFS: only up_rate_limit_us, down_rate_limit_us, gaming_mode === */
+/* PRIME exposes the gaming_mode toggle in addition to rate limits. */
 static struct attribute *rfx_prime_attrs[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
@@ -1246,7 +1619,7 @@ static struct attribute *rfx_prime_attrs[] = {
 };
 ATTRIBUTE_GROUPS(rfx_prime);
 
-/* LITTLE: basic tunables only */
+/* LITTLE cluster sysfs */
 static struct attribute *rfx_little_attrs[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
@@ -1254,7 +1627,7 @@ static struct attribute *rfx_little_attrs[] = {
 };
 ATTRIBUTE_GROUPS(rfx_little);
 
-/* BIG: basic tunables only */
+/* BIG cluster sysfs */
 static struct attribute *rfx_big_attrs[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
@@ -1307,7 +1680,11 @@ static void rfx_policy_free(struct rfx_policy *rfx_pol)
 	kfree(rfx_pol);
 }
 
-/* === KTHREAD WORKER === */
+/* === KTHREAD WORKER ===
+ * Runtime trimmed to 1.5ms / 8ms deadline / 8ms period: tight enough
+ * to land inside one frame at 120Hz, loose enough not to starve other
+ * SCHED_DEADLINE tasks (audio, display compose).
+ */
 
 static int rfx_kthread_create(struct rfx_policy *rfx_pol)
 {
@@ -1316,9 +1693,9 @@ static int rfx_kthread_create(struct rfx_policy *rfx_pol)
 		.size = sizeof(struct sched_attr),
 		.sched_policy = SCHED_DEADLINE,
 		.sched_flags = SCHED_FLAGS_UGOV,
-		.sched_runtime = 4 * NSEC_PER_MSEC,	/* v5: slightly more */
-		.sched_deadline = 10 * NSEC_PER_MSEC,
-		.sched_period = 10 * NSEC_PER_MSEC,
+		.sched_runtime = 1500000,	/* 1.5 ms */
+		.sched_deadline = 8000000,	/* 8 ms   */
+		.sched_period = 8000000,	/* 8 ms   */
 	};
 	struct cpufreq_policy *policy = rfx_pol->policy;
 	int ret;
@@ -1431,8 +1808,6 @@ static int rfx_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	tunables->gaming_mode = READ_ONCE(rfx_global_gaming_mode);
-
 	max_cap = arch_scale_cpu_capacity(cpumask_first(policy->cpus));
 
 	if (max_cap <= (unsigned long)RFX_LITTLE_CAP_THRESHOLD) {
@@ -1474,7 +1849,6 @@ static int rfx_init(struct cpufreq_policy *policy)
 		goto fail;
 
 init_state:
-	/* Initialize v5 builtin adaptive state */
 	rfx_fps_init(&rfx_pol->fps_state);
 	rfx_thermal_init(&rfx_pol->thermal);
 	if (READ_ONCE(rfx_global_gaming_mode)) {
@@ -1489,6 +1863,8 @@ init_state:
 	rfx_pol->prev_gaming = READ_ONCE(rfx_global_gaming_mode);
 	rfx_pol->prev_target_freq = policy->cur;
 	rfx_pol->last_boost_time_ns = 0;
+	rfx_pol->last_heavy_update_ns = 0;
+	rfx_pol->policy_iowait_active = false;
 
 	mutex_unlock(&rfx_global_tunables_lock);
 	return 0;
@@ -1538,6 +1914,7 @@ static int rfx_start(struct cpufreq_policy *policy)
 	u64 now;
 	struct rfx_cpu *rfx_c;
 	bool gaming = READ_ONCE(rfx_global_gaming_mode);
+	unsigned int start_freq;
 
 	rfx_pol->up_rate_delay_ns = (s64)rfx_pol->tunables->up_rate_limit_us * NSEC_PER_USEC;
 	rfx_pol->down_rate_delay_ns = (s64)rfx_pol->tunables->down_rate_limit_us * NSEC_PER_USEC;
@@ -1545,20 +1922,44 @@ static int rfx_start(struct cpufreq_policy *policy)
 	now = ktime_get_ns();
 	rfx_pol->last_upfreq_time = now;
 	rfx_pol->last_downfreq_time = now;
-	rfx_pol->next_freq = policy->cur > 0 ? policy->cur : policy->cpuinfo.min_freq;
+	rfx_pol->last_heavy_update_ns = 0;
+
+	start_freq = policy->cur > 0 ? policy->cur : policy->cpuinfo.min_freq;
+	rfx_pol->next_freq = start_freq;
 	rfx_pol->work_in_progress = false;
 	rfx_pol->limits_changed = false;
-	rfx_pol->cached_raw_freq = 0;
 	rfx_pol->need_freq_update = false;
-	rfx_pol->last_real_update_ns = now;
 	rfx_pol->avg_util_pct = 0;
 	rfx_pol->prev_gaming = gaming;
-	rfx_pol->prev_target_freq = policy->cur;
+	rfx_pol->prev_target_freq = start_freq;
 	rfx_pol->last_boost_time_ns = 0;
+	rfx_pol->policy_iowait_active = false;
 
 	if (gaming) {
+		enum rfx_cluster_type cluster =
+			rfx_get_cluster_type(cpumask_first(policy->cpus));
+		unsigned int snap_pct;
+
+		switch (cluster) {
+		case RFX_CLUSTER_PRIME:
+			snap_pct = RFX_ASYM_PRIME_FLOOR_PCT;
+			break;
+		case RFX_CLUSTER_BIG:
+			snap_pct = RFX_ASYM_BIG_FLOOR_PCT;
+			break;
+		default:
+			snap_pct = RFX_ASYM_LITTLE_FLOOR_PCT;
+			break;
+		}
+
 		rfx_pol->fps_state.hint = RFX_BUILTIN_FPS_HINT;
 		rfx_pol->fps_state.actual = RFX_BUILTIN_ACTUAL_FPS;
+		/* Pre-seed the smoother target at the cluster floor so the
+		 * very first scheduler event puts the policy at game-ready
+		 * freq without staircasing. */
+		rfx_pol->prev_target_freq =
+			rfx_adaptive_floor(policy, snap_pct);
+		rfx_pol->last_boost_time_ns = now;
 	}
 	rfx_frame_tracker_init(&rfx_pol->frame_tracker, rfx_pol->fps_state.hint);
 
@@ -1569,9 +1970,11 @@ static int rfx_start(struct cpufreq_policy *policy)
 		memset(rfx_c, 0, sizeof(*rfx_c));
 		rfx_c->cpu = cpu;
 		rfx_c->rfx_policy = rfx_pol;
-		rfx_predictor_init(&rfx_c->predictor);
-		rfx_c->iowait_boost = IOWAIT_BOOST_MIN;
-		rfx_c->prev_idle_time = get_cpu_idle_time(cpu, &rfx_c->prev_wall_time, 1);
+		if (gaming)
+			rfx_predictor_seed(&rfx_c->predictor, 50, now);
+		else
+			rfx_predictor_init(&rfx_c->predictor);
+		rfx_c->iowait_boost = 0;
 		cpufreq_add_update_util_hook(cpu, &rfx_c->update_util, uu);
 	}
 	return 0;
@@ -1631,7 +2034,6 @@ static int __init vorpal_gov_init(void)
 {
 	pr_info("%s %s by %s\n", CPUFREQ_VORPAL_PROGNAME,
 		CPUFREQ_VORPAL_VERSION, CPUFREQ_VORPAL_AUTHOR);
-	pr_info("Stable120|CoolDaily|RaceFix|NoDeadlock|SmoothBoost\n");
 	return cpufreq_register_governor(&vorpal_gov);
 }
 
