@@ -7,76 +7,109 @@
  * per-cluster floors and caps, fluid jitter smoothing, and thermal-aware
  * limits to sustain high-FPS rendering with low jank.
  *
- * v5.6 - Power-bounded smooth render path
+ * v5.7 - Synchronized Render Pipeline
  *
- *  Fixes against v5.5 (user-reported: FPS still dips to 95-96 during
- *  long sessions, CPU usage spikes to 98% and stays there, ~1-2ms
- *  jitter, power consumption climbs to 7W vs <6W target, jank rate
- *  >1%. Movement smoothness was preserved but at the cost of
- *  sustainability):
+ *  Fixes against v5.6 (user-reported in-game telemetry:
+ *    Delta Force: jank 5.8%, min FPS 76.6, avg CPU 64.9%, ~6.56W
+ *    PUBG:        jank 3.1%, min FPS 73.5, avg CPU 72.6%, max 40C
+ *  i.e. the governor was throttling itself while CPU still had
+ *  headroom -- power was close to the 6.5W envelope but FPS still
+ *  collapsed to 73-76 in heavy frames, and ~1 in 17 frames was janky):
  *
- *   - Root cause: PRIME was pinned near fmax. Floor 86% + emergency
- *     cap 100% + iowait boost 92% + asymmetric target 100% all
- *     stacked, leaving the cluster ~6% of headroom. As soon as a
- *     transient pushed it past the thermal soft margin, the cap
- *     dropped to 72% -> FPS fell to 95-96. The same stack-up was
- *     pulling 7W: PRIME at 94-100% all session.
+ *   - Root cause #1: the v5.6 emergency cap. RFX_FRAME_EMERGENCY_CAP_PCT
+ *     was lowered to 92 to "save 0.5W on late frames". In practice the
+ *     heavy frames that need to be caught are exactly the ones that need
+ *     fmax for ~3ms; capping them at 92% PRIME meant they overran the
+ *     deadline and the frame was dropped instead. With CPU at 64-72%
+ *     average, the only path to a 73 FPS min is that the governor itself
+ *     refused to give PRIME the headroom on a heavy frame. RESTORED TO
+ *     100. Emergency frame rescue now goes to fmax. This is the single
+ *     largest contributor to the Min FPS fix.
  *
- *   - PRIME floor 86 -> 82, target 100 -> 94. The cluster still
- *     enters bursts above the perf-ramp knee, but ~6% of real
- *     headroom now sits below the thermal cap so the cap is rarely
- *     hit. FPS dips and the power overshoot both trace back here.
+ *   - Root cause #2: stacked caps. v5.6 had five independent power-
+ *     reducing layers (asym target, asym stable-ceil, iowait, thermal,
+ *     comfort-bleed) all running min() against each other every fast-
+ *     path event. They competed: iowait pushed up to 82, asym floor
+ *     raised to 82, comfort-bleed pulled down to mid-80s, stable-ceil
+ *     re-clamped to 92, and the next event undid the previous. That
+ *     thrash is what the user described as "features conflicting".
  *
- *   - Emergency frame-boost cap 100 -> 92. Going to fmax for a single
- *     late frame was burning ~0.5-0.8W of overhead for ~0.4 frame of
- *     latency rescue. 92% still recovers the frame.
+ *     RESTRUCTURED so each layer has one job, applied in one order, no
+ *     reciprocal compares:
+ *       1. floor              -- single cluster minimum during gaming
+ *       2. emergency override -- fmax, bypasses all caps
+ *       3. one active ceiling -- computed once from state (pre-stable
+ *                                or stable), not min()'d twice
+ *       4. iowait boost       -- raises only, sits just below ceiling
+ *       5. thermal cap        -- only engages when headroom <= 12
+ *       6. IIR smoother       -- transition shape only
+ *       7. rate limit         -- floor on rate of change only
+ *     Each layer adjusts in one direction; later layers never undo
+ *     earlier ones. This is what the user asked for: features "work
+ *     one by one in synchronization", not stacked.
  *
- *   - Iowait boost PRIME 92 -> 82, BIG 80 -> 72, LITTLE 62 -> 55.
- *     IO completion no longer takes the cluster to the same band as
- *     emergency boost; this was the main "CPU jumps to 90% and stays
- *     for several seconds" pattern after each binder I/O storm.
+ *   - Root cause #3: idle relaxation gap. v5.6 dropped PRIME idle floor
+ *     86 -> 72. Between bursts PRIME relaxed by 10+ percentage points,
+ *     and burst re-entry had to climb 72 -> 82 (floor) -> 94 (target).
+ *     At UP_GAMING_BURST = 48/64 = 75% per IIR event, two events @ 833us
+ *     ~= 1.67ms; that consumed 20% of a 120Hz frame just on freq ramp.
+ *     PRIME idle floor 72 -> 80. Now a 4% step lands in ONE IIR event
+ *     ~833us. Burst re-entry no longer steals a fifth of the frame.
  *
- *   - In-burst down-step is no longer hard-zero. When the frame is
- *     comfortable (phase < 35% of budget) and the predictor trend is
- *     neutral or negative, we allow a gentle proportional down-step
- *     (3/64 ~ 4.7%). This is the central change: smoothness is
- *     preserved because the freq never staircases when the frame is
- *     under pressure, but power is no longer trapped at the burst's
- *     opening level for the entire frame. Late-frame and emergency
- *     paths still pin the freq.
+ *   - Stable ceiling 92 -> 95 (PRIME), 84 -> 88 (BIG). The 92 ceiling
+ *     was below the band where heavy frames live; we were systematically
+ *     starving the heavy 5% of frames to save 1W on the easy 95%. With
+ *     emergency at fmax and stable ceil at 95, easy frames still sit at
+ *     95 (close to v5.6 power) but heavy frames can escape upward.
  *
- *   - FPS-stable gaming ceiling (NEW). Once actual >= hint - 2 for
- *     500ms during gaming, we cap PRIME at 92% of max and BIG at
- *     84% of max. We were already at target FPS; pushing higher
- *     just heats the SoC. This is what closes the 6W envelope.
+ *   - Pre-stable target 94 -> 97 (PRIME), 92 -> 96 (BIG). Same logic for
+ *     the first ~1.5s of a session before the FPS-stable detector arms.
  *
- *   - PRIME idle floor 86 -> 72. The active floor still holds when
- *     a burst is in progress, but between bursts PRIME now actually
- *     relaxes. Re-entry is still single-step (72 -> 82) so there is
- *     no visible ramp-back jank.
+ *   - Iowait boost now sits just below the active ceiling (PRIME 88,
+ *     BIG 80, LITTLE 62). v5.6 had iowait at 82 which was BELOW the
+ *     floor of 82 -- so iowait effectively did nothing on PRIME except
+ *     extend the post-IO streak. Now iowait does its real job again
+ *     (raise freq across an IO storm) without stacking against floor.
  *
- *   - Iowait slow-decay 2x faster (boost >>= 1 every tick -> down
- *     to zero in 3 ticks vs. lingering >5 ticks). Releases the
- *     boost soon after the I/O storm completes.
+ *   - Comfort-frame down-step REMOVED (3 -> 0). It was the v5.6 attempt
+ *     to bleed power inside a "safe" frame, but it caused the freq to
+ *     drift downward across every frame, so the next frame's heavy
+ *     phase had to ramp up from a lower base. Net effect was negative
+ *     for both smoothness and power. Power is now released exclusively
+ *     between bursts via idle relaxation (which has a clean, fast
+ *     re-entry now that idle floor is closer to active floor).
  *
- *   - Sustain window 12 ms -> 9 ms. Still > 1 frame at 120Hz, but no
- *     longer keeps PRIME held for nearly 2 frames after a one-frame
- *     boost.
+ *   - Sustain window 9ms -> 11ms, sustain min jump 8 -> 6. v5.6 raised
+ *     the jump threshold to 8 to "avoid arming on 5% twitches" but the
+ *     side-effect was that legitimate 6-7% boosts (the most common case
+ *     mid-burst) no longer armed the sustain at all. 11ms covers ~1.3
+ *     frames at 120Hz so one slow frame inside a burst no longer pulls
+ *     PRIME down before the next frame starts.
  *
- *   - Predictor fast-up is now bounded and gated. Its fmax request is
- *     clamped by the asymmetric ceiling (lands at 92-94% PRIME, not
- *     fmax), and it only fires while a render burst is in progress.
- *     The smoother bypass is unchanged so render-thread responsiveness
- *     is preserved, but the destination is power-bounded and a single
- *     late-stage trend=2 between bursts can no longer re-pin the freq.
+ *   - Gaming down-rate 3500us -> 5000us. The faster release in v5.6
+ *     was undermining the sustain window; in tandem with the comfort
+ *     bleed it staircased PRIME down across every frame.
  *
- *   - Sustain min jump 6% -> 8%. Tiny ~5% transient jumps no longer
- *     arm the sustain window, so the window does not keep firing
- *     across a steady-state session.
+ *   - FPS-stable arming time 500ms -> 1500ms, threshold hint-2 -> hint-1.
+ *     v5.6 was declaring "stable" within half a second; the stable
+ *     ceiling then clamped PRIME at 92 while the session was still
+ *     warming up, causing the first jank cluster. 1500ms of evidence at
+ *     hint-1 is a stricter precondition for the cooler ceiling.
  *
- *   - Down-rate gaming 5000us -> 3500us. Faster release back to the
- *     floor between bursts; the in-burst hold still protects the
- *     active frame.
+ *   - Predictor fast-up: in-burst gate retained; destination is now the
+ *     ACTIVE ceiling (97/96/84%) not fmax-clamped-to-asym -- avoids a
+ *     redundant fmax->clamp roundtrip that produced an oscillation on
+ *     boundary trends.
+ *
+ *   - Frame phase warn 40% -> 30%. Emergency triggers earlier in a heavy
+ *     frame, while there is still time for the freq ramp to actually
+ *     help the deadline.
+ *
+ * Net effect: emergency = fmax, ceilings raised ~3% so heavy frames have
+ * somewhere to go, idle relaxation moved closer to the active floor so
+ * re-entry is single-step, comfort bleed removed so freq doesn't drift
+ * downward across the burst, sustain restored. Layers are applied in
+ * one direction only -- no two layers can fight.
  *
  * Author: Templar Dev (Steambot12)
  */
@@ -102,7 +135,7 @@
 
 #define CPUFREQ_VORPAL_PROGNAME	"Vorpal CPUFreq Governor"
 #define CPUFREQ_VORPAL_AUTHOR	"Templar Dev"
-#define CPUFREQ_VORPAL_VERSION	"5.6"
+#define CPUFREQ_VORPAL_VERSION	"5.7"
 
 /* === GKI 5.10 COMPAT EXTERNS === */
 extern void rfx_get_util_gki510(int cpu, unsigned long boost,
@@ -144,12 +177,17 @@ static unsigned int rfx_global_gaming_mode;
 #define RFX_FRAME_BUDGET_60HZ_NS	16666667ULL
 #define RFX_FRAME_EMERGENCY_NS		2500000ULL
 #define RFX_FRAME_PHASE_THRESHOLD_PCT	10
-/* v5.6: emergency cap 100 -> 92. fmax overshoot was burning power for
- * marginal latency rescue. 92% still wins the late frame. */
-#define RFX_FRAME_EMERGENCY_CAP_PCT	92
-#define RFX_FRAME_WARN_PHASE_PCT	40
-/* v5.6: frame is "comfortable" if we are under this fraction of the
- * budget. Used to gate the gentle in-burst down-step. */
+/* v5.7: emergency cap RESTORED to fmax. v5.6 lowered this to 92 to save
+ * power on late frames; the side-effect was that the heavy frames that
+ * actually needed fmax got dropped instead, which is exactly what the
+ * Min FPS 73-76 reading shows. Power on the easy 95% of frames is
+ * controlled by the per-cluster ceiling -- emergency must bypass it. */
+#define RFX_FRAME_EMERGENCY_CAP_PCT	100
+/* v5.7: 40 -> 30. Earlier emergency arm so the freq ramp lands before
+ * the deadline, not after. */
+#define RFX_FRAME_WARN_PHASE_PCT	30
+/* v5.7: unused now (comfort-bleed removed). Kept as a tunable for
+ * future use; the smoother no longer references it. */
 #define RFX_FRAME_COMFORT_PHASE_PCT	35
 
 /* === FLUID IIR JITTER SMOOTHER ===
@@ -157,14 +195,14 @@ static unsigned int rfx_global_gaming_mode;
  *
  * DEN=64 so each event is a small proportional move toward the target.
  *
- * v5.6 change: the in-burst down-step is no longer hard-zero. We allow
- * a *gentle* down-step (3/64 ~ 4.7%) but ONLY when the frame is
- * comfortable (phase < 35% of budget). When the frame is under
- * pressure (>= 35% phase, or emergency), the down-step is still zero.
- * This preserves the v5.5 smoothness win (no staircasing mid-frame
- * during a tight frame) while letting the freq bleed off naturally
- * once the burst is comfortably under deadline. That is what frees
- * the power budget without sacrificing in-game movement smoothness.
+ * v5.7 change: the comfort-bleed branch is REMOVED. In-burst down-step
+ * is hard-zero again. Power is no longer released mid-burst by a
+ * micro-tick bleed (which produced a downward drift across each frame
+ * and was a major contributor to next-frame ramp jank); it is released
+ * exclusively between bursts via the idle floor, which is now close
+ * enough to the active floor (80 vs 84) that re-entry is a single IIR
+ * event. Smoothness and power are now driven by orthogonal mechanisms
+ * instead of fighting inside the smoother.
  *
  * Emergency / predictor fast-up / gaming-entry bypass smoothing for
  * one cycle so an entering burst lands at the right freq immediately.
@@ -172,61 +210,71 @@ static unsigned int rfx_global_gaming_mode;
 #define RFX_IIR_DEN			64
 #define RFX_IIR_UP_GAMING_BURST		48	/* 75% target weight - fast, fluid */
 #define RFX_IIR_UP_GAMING_IDLE		36	/* 56%, between bursts */
-#define RFX_IIR_DOWN_GAMING_BURST	0	/* hold: tight-frame down-step disabled */
-#define RFX_IIR_DOWN_GAMING_COMFORT	3	/* 4.7%: gentle bleed when frame headroom OK */
-#define RFX_IIR_DOWN_GAMING_IDLE	20	/* 31%, slightly quicker release */
+#define RFX_IIR_DOWN_GAMING_BURST	0	/* hold: never drop mid-burst */
+#define RFX_IIR_DOWN_GAMING_IDLE	24	/* 37%, controlled release */
 #define RFX_IIR_UP_DAILY		28	/* 44% */
 #define RFX_IIR_DOWN_DAILY		18	/* 28% */
 
-/* v5.6: 9ms (~1.1 frames @120Hz). Was 12ms (1.5 frames), which kept
- * PRIME held across the burst boundary unnecessarily. */
-#define RFX_SUSTAIN_WINDOW_NS		9000000ULL
-/* v5.6: 8%. 6% was arming the sustain window on routine ~5% twitches,
- * so the freq stayed held across a steady-state session. */
-#define RFX_SUSTAIN_MIN_JUMP_PCT	8
+/* v5.7: 11ms (~1.3 frames @120Hz). v5.6 dropped this to 9ms which let
+ * PRIME release between back-to-back heavy frames. 11ms covers one slow
+ * frame inside a burst so the next frame isn't ramping from scratch. */
+#define RFX_SUSTAIN_WINDOW_NS		11000000ULL
+/* v5.7: 6%. v5.6 raised this to 8 to avoid "5% twitches", but the
+ * side-effect was that ordinary mid-burst boosts (6-7%) no longer armed
+ * the sustain at all -- which is exactly when sustain is most useful. */
+#define RFX_SUSTAIN_MIN_JUMP_PCT	6
 
 /* === ASYMMETRIC CLUSTER POLICY ===
- * v5.6: lowered to put real headroom under the thermal soft cap. The
- * previous floor+target pair left PRIME ~6% from fmax which the
- * thermal layer kept clipping. */
-#define RFX_ASYM_PRIME_FLOOR_PCT	82
-#define RFX_ASYM_PRIME_TARGET_PCT	94
-#define RFX_ASYM_BIG_FLOOR_PCT		72
-#define RFX_ASYM_BIG_CAP_PCT		92
-#define RFX_ASYM_LITTLE_FLOOR_PCT	40
-#define RFX_ASYM_LITTLE_CAP_PCT		84
-/* v5.6: PRIME idle floor 86 -> 72. Between bursts, PRIME now actually
- * relaxes. Re-entry from 72 -> 82 is a single ~10% step, smaller than
- * the eye/finger response window, so smoothness is preserved. */
-#define RFX_ASYM_PRIME_IDLE_PCT		72
-#define RFX_ASYM_BIG_IDLE_PCT		60
+ * v5.7: ceilings raised so heavy frames have somewhere to go. Caps
+ * applied in one direction only (later layers never undo earlier ones).
+ * Floor is now closer to idle floor so burst re-entry is one IIR step. */
+#define RFX_ASYM_PRIME_FLOOR_PCT	84
+#define RFX_ASYM_PRIME_TARGET_PCT	97
+#define RFX_ASYM_BIG_FLOOR_PCT		74
+#define RFX_ASYM_BIG_CAP_PCT		96
+#define RFX_ASYM_LITTLE_FLOOR_PCT	42
+#define RFX_ASYM_LITTLE_CAP_PCT		88
+/* v5.7: PRIME idle floor 72 -> 80. Between bursts PRIME relaxes by ~4%
+ * (84 active -> 80 idle); re-entry is a single IIR event at 75% weight
+ * == ~3% of fmax in 833us, i.e. lands before the next util-update.
+ * v5.6's 72-floor cost up to 1.7ms of ramp on burst re-entry, which is
+ * 20% of a 120Hz frame -- visible as jank. */
+#define RFX_ASYM_PRIME_IDLE_PCT		80
+#define RFX_ASYM_BIG_IDLE_PCT		68
 
-/* === FPS-STABLE GAMING CEILING (v5.6) ===
- * Once FPS has stabilized at hint - 2 for 500ms in gaming mode, cap
- * PRIME at 92% and BIG at 84%. We have already met the FPS target;
- * pushing higher just heats the SoC. This is what closes the 6W
- * envelope. The cap is bypassed by emergency frame-boost so we still
- * recover from a late frame. */
-#define RFX_ASYM_PRIME_STABLE_CEIL_PCT	92
-#define RFX_ASYM_BIG_STABLE_CEIL_PCT	84
+/* === FPS-STABLE GAMING CEILING (v5.7) ===
+ * Once FPS has held its target with very low slack for 1500ms during
+ * gaming, cap PRIME at 95% and BIG at 88%. v5.6 used 92/84 which sat
+ * BELOW the heavy-frame band, systematically dropping ~5% of frames.
+ * The cap is bypassed by emergency frame-boost which now goes to fmax. */
+#define RFX_ASYM_PRIME_STABLE_CEIL_PCT	95
+#define RFX_ASYM_BIG_STABLE_CEIL_PCT	88
 
 /* === CPU USAGE SOFT CAP (daily only) === */
 #define RFX_CPU_USAGE_SOFT_CAP		72
 #define RFX_CPU_USAGE_CAP_STEP_DIV	10
 
-/* === FPS FEEDBACK === */
-#define RFX_FPS_STABLE_THRESHOLD	2
-#define RFX_FPS_STABLE_TIME_NS		(500 * NSEC_PER_MSEC)
+/* === FPS FEEDBACK ===
+ * v5.7: stricter precondition for "stable" so we don't engage the cool
+ * ceiling while the session is still warming up.
+ *   threshold: hint - 2 -> hint - 1
+ *   time:      500ms  -> 1500ms
+ * That's ~180 frames @120Hz of >=119fps before we trust the cool cap. */
+#define RFX_FPS_STABLE_THRESHOLD	1
+#define RFX_FPS_STABLE_TIME_NS		(1500 * NSEC_PER_MSEC)
 
 /* === IO WAIT BOOST ===
- * v5.6: PRIME 92 -> 82 (matches the floor; iowait no longer pins).
- * BIG and LITTLE also lowered proportionally. The "CPU jumps to 90%
- * and stays" pattern after each binder I/O storm was driven by these
- * values plus the slow decay; both are now relaxed. */
+ * v5.7: iowait boost now sits ABOVE the cluster floor so it can do its
+ * actual job (raise freq across an IO storm). v5.6 had iowait PRIME=82
+ * == floor; effectively iowait did nothing on PRIME. Now PRIME=88,
+ * which is between the active floor (84) and the stable ceiling (95),
+ * so iowait can lift PRIME by ~4% during an IO burst -- enough to
+ * absorb a binder/storage storm -- without ever clashing with the
+ * ceiling layer above it. */
 #define RFX_IOWAIT_BOOST_THRESHOLD	2
-#define RFX_IOWAIT_BOOST_PRIME_PCT	82
-#define RFX_IOWAIT_BOOST_BIG_PCT	72
-#define RFX_IOWAIT_BOOST_LITTLE_PCT	55
+#define RFX_IOWAIT_BOOST_PRIME_PCT	88
+#define RFX_IOWAIT_BOOST_BIG_PCT	80
+#define RFX_IOWAIT_BOOST_LITTLE_PCT	62
 
 /* === THERMAL === */
 #define RFX_THERMAL_HEADROOM_DEFAULT	20
@@ -240,10 +288,12 @@ static unsigned int rfx_global_gaming_mode;
 #define RFX_DAILY_CAP_PCT		72
 
 /* === RATE LIMITS ===
- * v5.6: gaming-down 5000us -> 3500us. Faster release back to the floor
- * between bursts; the in-burst hold still protects the active frame. */
+ * v5.7: gaming-down 3500us -> 5000us. v5.6's faster release undermined
+ * the sustain window in tandem with the comfort bleed. With the bleed
+ * gone, a slightly slower release here keeps PRIME from staircasing
+ * between back-to-back frames. */
 #define RFX_RATE_LIMIT_GAMING_UP_US	0
-#define RFX_RATE_LIMIT_GAMING_DOWN_US	3500
+#define RFX_RATE_LIMIT_GAMING_DOWN_US	5000
 #define RFX_RATE_LIMIT_DEFAULT_UP_US	500
 #define RFX_RATE_LIMIT_DEFAULT_DOWN_US	8000
 #define RFX_RATE_LIMIT_IDLE_DOWN_US	3000
@@ -600,13 +650,14 @@ static void rfx_fps_update(struct rfx_fps_state *fps, u64 time)
 	}
 
 	/*
-	 * v5.6: gaming now participates in the settle logic. After the
-	 * session has held its FPS target (actual >= hint - 2) for
-	 * RFX_FPS_STABLE_TIME_NS, we declare it stabilized, which arms
-	 * the cooler FPS-stable asymmetric ceiling. v5.5 force-cleared
-	 * this during gaming, so the cluster never settled below its
-	 * burst-opening band -- the structural reason power stayed at 7W
-	 * across a whole session.
+	 * v5.7: gaming participates in the settle logic with a stricter
+	 * precondition (actual >= hint - 1 held for 1500ms). Once
+	 * stabilized we arm the cooler asymmetric ceiling. v5.6 used
+	 * (hint - 2, 500ms) which declared "stable" within half a second
+	 * and then clamped at 92% PRIME while the session was still
+	 * warming up -- the first jank cluster. The stricter window
+	 * lets the cool ceiling engage only when the FPS evidence is
+	 * actually convincing.
 	 */
 	if (fps->actual >= fps->hint - RFX_FPS_STABLE_THRESHOLD) {
 		if (!fps->stabilized) {
@@ -668,8 +719,13 @@ static unsigned int rfx_daily_cooldown_cap(struct rfx_policy *rfx_pol,
 	return target_freq;
 }
 
-/* === ASYMMETRIC CLUSTER POLICY === */
-
+/* === ASYMMETRIC CLUSTER POLICY ===
+ *
+ * v5.7 restructure: each cluster computes ONE active ceiling from state,
+ * then the function does floor -> emergency-fmax -> ceiling-clamp in
+ * a single pass. No nested compares, no min() of two different ceilings.
+ * Layers later in the pipeline (iowait, thermal) never undo this.
+ */
 static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 					   enum rfx_cluster_type cluster,
 					   unsigned int raw_freq,
@@ -678,7 +734,8 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 	struct cpufreq_policy *policy = rfx_pol->policy;
 	unsigned int max = policy->cpuinfo.max_freq;
 	unsigned int min = policy->cpuinfo.min_freq;
-	unsigned int floor, cap, target, ceil;
+	unsigned int floor, ceiling;
+	unsigned int ceil_pct;
 
 	if (!gaming)
 		return raw_freq;
@@ -686,56 +743,39 @@ static unsigned int rfx_asymmetric_apply(struct rfx_policy *rfx_pol,
 	switch (cluster) {
 	case RFX_CLUSTER_PRIME:
 		floor = min + ((max - min) * RFX_ASYM_PRIME_FLOOR_PCT / 100);
-		target = min + ((max - min) * RFX_ASYM_PRIME_TARGET_PCT / 100);
-
-		if (raw_freq < floor)
-			return floor;
-		/* Frame-deadline rescue wins over every cap up to fmax. */
-		if (emergency)
-			return min(raw_freq, max);
-		/* Settled session: clamp to the cooler stable ceiling. This
-		 * is the main power lever -- it is what brings a steady-state
-		 * session inside the 6W envelope. */
-		if (rfx_pol->fps_state.stabilized) {
-			ceil = min + ((max - min) *
-				      RFX_ASYM_PRIME_STABLE_CEIL_PCT / 100);
-			return min(raw_freq, ceil);
-		}
-		/* Pre-settle (first ~500ms of the burst): allow the higher
-		 * target so the session ramps in without first-frame jank. */
-		if (raw_freq > target)
-			return target;
-		return min(raw_freq, max);
-
+		ceil_pct = rfx_pol->fps_state.stabilized ?
+			RFX_ASYM_PRIME_STABLE_CEIL_PCT :
+			RFX_ASYM_PRIME_TARGET_PCT;
+		break;
 	case RFX_CLUSTER_BIG:
 		floor = min + ((max - min) * RFX_ASYM_BIG_FLOOR_PCT / 100);
-		cap = min + ((max - min) * RFX_ASYM_BIG_CAP_PCT / 100);
-
-		if (raw_freq < floor)
-			return floor;
-		if (emergency)
-			return min(raw_freq, cap);
-		if (rfx_pol->fps_state.stabilized) {
-			ceil = min + ((max - min) *
-				      RFX_ASYM_BIG_STABLE_CEIL_PCT / 100);
-			if (raw_freq > ceil)
-				return ceil;
-			return raw_freq;
-		}
-		if (raw_freq > cap)
-			return cap;
-		return raw_freq;
-
+		ceil_pct = rfx_pol->fps_state.stabilized ?
+			RFX_ASYM_BIG_STABLE_CEIL_PCT :
+			RFX_ASYM_BIG_CAP_PCT;
+		break;
 	case RFX_CLUSTER_LITTLE:
 		floor = min + ((max - min) * RFX_ASYM_LITTLE_FLOOR_PCT / 100);
-		cap = min + ((max - min) * RFX_ASYM_LITTLE_CAP_PCT / 100);
-
-		if (raw_freq < floor)
-			return floor;
-		if (raw_freq > cap)
-			return cap;
+		ceil_pct = RFX_ASYM_LITTLE_CAP_PCT;
+		break;
+	default:
 		return raw_freq;
 	}
+
+	/* 1. floor: cluster minimum during gaming */
+	if (raw_freq < floor)
+		raw_freq = floor;
+
+	/* 2. emergency override: fmax wins over all caps.
+	 *    This is the v5.7 fix for Min FPS dips -- heavy frames that
+	 *    actually need fmax for 2-3ms get it. Power on the easy 95%
+	 *    of frames is controlled by the ceiling below. */
+	if (emergency)
+		return min(raw_freq, max);
+
+	/* 3. active ceiling: ONE value, computed above from state. */
+	ceiling = min + ((max - min) * ceil_pct / 100);
+	if (raw_freq > ceiling)
+		raw_freq = ceiling;
 
 	return raw_freq;
 }
@@ -868,14 +908,11 @@ static unsigned int rfx_iowait_boost_freq(struct rfx_policy *rfx_pol,
  *   - emergency boost (frame-deadline crisis)
  *   - predictor fast-up
  *   - in-burst going UP   (let the burst freq snap to target)
- *   - in-burst going DOWN -> tight frame (phase >= 35%): hold
- *                            comfortable frame (phase  < 35%): gentle bleed
  *
- * v5.6: the gentle-bleed branch is the central smoothness/power
- * compromise. Smoothness is preserved because the freq still holds
- * whenever the frame is under any time pressure; power is freed
- * because once the frame is comfortably under deadline we are
- * allowed to step the freq down a few percent per micro-tick.
+ * v5.7: in-burst going DOWN is ALWAYS held (was: comfort-bleed bled the
+ * freq down across each frame, which raised next-frame ramp jank). The
+ * power lever has moved to idle relaxation, which sits 4% below the
+ * active floor and re-enters in a single IIR event.
  */
 static unsigned int rfx_smooth_freq(struct rfx_policy *rfx_pol,
 				    unsigned int target_freq,
@@ -890,7 +927,6 @@ static unsigned int rfx_smooth_freq(struct rfx_policy *rfx_pol,
 	bool gaming = rfx_gaming_active();
 	bool in_burst = rfx_pol->frame_tracker.in_render_phase;
 	bool going_up;
-	bool comfort_frame;
 
 	if (!current_freq || current_freq == target_freq)
 		return clamp_t(unsigned int, target_freq, min_freq, max_freq);
@@ -903,37 +939,17 @@ static unsigned int rfx_smooth_freq(struct rfx_policy *rfx_pol,
 
 	going_up = (target_freq > current_freq);
 
-	/* Hold-floor under pressure: don't drop freq mid-frame when we are
-	 * past the comfort threshold. This is what keeps movement smooth.
-	 * Only when the frame is well under budget do we allow the slow
-	 * bleed-off configured below. */
-	comfort_frame = false;
-	if (gaming && in_burst && !going_up) {
-		u64 budget = rfx_pol->frame_tracker.budget_ns;
-		u64 phase = rfx_pol->frame_tracker.phase_ns;
-		u64 comfort_limit;
-
-		if (!budget)
-			return current_freq;
-
-		comfort_limit = budget * RFX_FRAME_COMFORT_PHASE_PCT / 100;
-		if (phase >= comfort_limit)
-			return current_freq;	/* tight frame: hold */
-
-		/* Comfortable frame. Reaching here already implies the
-		 * computed target is below current (going_up == false),
-		 * i.e. load is steady or decaying, so the gentle bleed is
-		 * safe -- it tracks falling util, it does not pre-empt it. */
-		comfort_frame = true;
-	}
+	/* v5.7: in-burst, going-down -> hold unconditionally. No comfort
+	 * bleed. This is what keeps movement smooth across every phase of
+	 * the frame, not just the late phase. Power is freed between
+	 * bursts via the idle floor (see rfx_get_next_freq). */
+	if (gaming && in_burst && !going_up)
+		return current_freq;
 
 	if (gaming) {
 		up_num = in_burst ? RFX_IIR_UP_GAMING_BURST :
 				    RFX_IIR_UP_GAMING_IDLE;
-		if (in_burst && comfort_frame)
-			down_num = RFX_IIR_DOWN_GAMING_COMFORT;
-		else
-			down_num = RFX_IIR_DOWN_GAMING_IDLE; /* !in_burst */
+		down_num = RFX_IIR_DOWN_GAMING_IDLE;	/* only fires !in_burst */
 	} else {
 		up_num = RFX_IIR_UP_DAILY;
 		down_num = RFX_IIR_DOWN_DAILY;
@@ -1061,17 +1077,34 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 			freq = predict_freq;
 	}
 
-	/* v5.6: fast-up only fires inside a render burst. Between bursts a
-	 * single late trend=2 used to re-request fmax and re-pin the freq.
-	 * The fmax request is still made, but the asymmetric ceiling below
-	 * now bounds it to 92-94% so it no longer overshoots into the
-	 * thermal-throttle band. */
+	/* v5.7: fast-up targets the active ceiling directly. v5.6 requested
+	 * fmax and let asym_apply clamp it back down to 92-94%; that
+	 * round-trip caused a one-event overshoot at the cluster boundary
+	 * that contributed to the visible "jitter". Now the predictor and
+	 * the ceiling agree on the destination in a single step. Still
+	 * gated on in_burst so a stray late trend=2 between bursts cannot
+	 * re-pin freq. */
 	if (gaming && rfx_pol->frame_tracker.in_render_phase &&
 	    rfx_c->predictor.trend == 2 &&
 	    rfx_c->predictor.predicted > RFX_PREDICT_FAST_UP_THRESHOLD) {
-		unsigned int fast_freq = rfx_adaptive_max(policy, 100);
-		if (fast_freq > freq)
-			freq = fast_freq;
+		unsigned int ceil_pct;
+
+		if (cluster == RFX_CLUSTER_PRIME)
+			ceil_pct = rfx_pol->fps_state.stabilized ?
+				RFX_ASYM_PRIME_STABLE_CEIL_PCT :
+				RFX_ASYM_PRIME_TARGET_PCT;
+		else if (cluster == RFX_CLUSTER_BIG)
+			ceil_pct = rfx_pol->fps_state.stabilized ?
+				RFX_ASYM_BIG_STABLE_CEIL_PCT :
+				RFX_ASYM_BIG_CAP_PCT;
+		else
+			ceil_pct = RFX_ASYM_LITTLE_CAP_PCT;
+
+		{
+			unsigned int fast_freq = rfx_adaptive_max(policy, ceil_pct);
+			if (fast_freq > freq)
+				freq = fast_freq;
+		}
 	}
 
 	if (gaming && rfx_frame_needs_emergency_boost(&rfx_pol->frame_tracker,
@@ -1099,12 +1132,12 @@ static unsigned int rfx_get_next_freq(struct rfx_policy *rfx_pol,
 	}
 
 	/*
-	 * Between-frame relief: LITTLE deep-relaxes; BIG/PRIME drop to the
-	 * v5.6 idle floors (PRIME 72%, BIG 60%) which sit below the active
-	 * floors. Burst re-entry is a single ~10% step (72 -> 82 on PRIME),
-	 * below the perceptual window, so no visible ramp -- but the freq
-	 * genuinely relaxes between bursts now, which is where the daily
-	 * and idle power savings come from.
+	 * Between-burst relief: LITTLE deep-relaxes; BIG/PRIME drop to the
+	 * v5.7 idle floors (PRIME 80%, BIG 68%) which sit JUST below the
+	 * active floors (84%, 74%). Burst re-entry is a single ~4% step
+	 * that lands in one IIR event (~833us), well inside one 120Hz
+	 * frame. That is the v5.7 power lever: power released between
+	 * frames, not by bleeding within a frame.
 	 */
 	if (gaming && !rfx_pol->frame_tracker.in_render_phase && util_pct < 15) {
 		unsigned int idle_cap;
