@@ -42,10 +42,13 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  *
  * (BORE default: 24ms constant, units: nanoseconds)
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
+ * (Templar 120fps tuning: 10ms = 1.2 frame @120Hz — render thread gets
+ *  full frame plus headroom; reduces context-switch storm when many
+ *  threads wake on enemy-spawn / asset-stream burst.)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 24000000;
-static unsigned int normalized_sysctl_sched_latency	= 24000000;
+unsigned int sysctl_sched_latency			= 10000000;
+static unsigned int normalized_sysctl_sched_latency	= 10000000;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_latency			= 5000000ULL;
  static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
@@ -75,10 +78,13 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  *
  * (BORE default: 3 msec constant, units: nanoseconds)
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ * (Templar 120fps tuning: 1.5ms — input thread on twitch (FPS shooting)
+ *  must not be blocked by render-thread slot. Pairs with vorpal v6.6
+ *  TWITCH detection that boosts CPU instantly on sub-frame spikes.)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 3000000;
-static unsigned int normalized_sysctl_sched_min_granularity	= 3000000;
+unsigned int sysctl_sched_min_granularity			= 1500000;
+static unsigned int normalized_sysctl_sched_min_granularity	= 1500000;
 #else // CONFIG_SCHED_BORE
  unsigned int sysctl_sched_min_granularity			= 750000ULL;
  static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
@@ -105,26 +111,28 @@ unsigned int sysctl_sched_child_runs_first __read_mostly = 0;
  *
  * (BORE default: 4 msec constant, units: nanoseconds)
  * (CFS  default: 1 msec * (1 + ilog(ncpus)), units: nanoseconds)
+ * (Templar 120fps tuning: 0.8ms — sub-min_granularity wake-bias for
+ *  instant render-thread preempt on vsync/input/spawn events.)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_wakeup_granularity			= 4000000;
-static unsigned int normalized_sysctl_sched_wakeup_granularity	= 4000000;
+unsigned int sysctl_sched_wakeup_granularity			= 800000;
+static unsigned int normalized_sysctl_sched_wakeup_granularity	= 800000;
 #else // CONFIG_SCHED_BORE
 unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 100000;
+const_debug unsigned int sysctl_sched_migration_cost	= 2000000;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 2;
-u8   __read_mostly sched_burst_smoothness_short = 1;
+u8   __read_mostly sched_burst_smoothness_long  = 5;
+u8   __read_mostly sched_burst_smoothness_short = 0;
 u8   __read_mostly sched_burst_fork_atavistic   = 0;
-u8   __read_mostly sched_burst_penalty_offset   = 22;
-uint __read_mostly sched_burst_penalty_scale    = 550;
-uint __read_mostly sched_burst_cache_lifetime   = 12000000;
+u8   __read_mostly sched_burst_penalty_offset   = 35;
+uint __read_mostly sched_burst_penalty_scale    = 192;
+uint __read_mostly sched_burst_cache_lifetime   = 240000000;
 #endif // CONFIG_SCHED_BORE
 
 int sched_thermal_decay_shift = 4;
@@ -560,11 +568,11 @@ static inline u32 log2plus1_u64_u32f8(u64 v) {
 
 static inline u32 calc_burst_penalty(u64 burst_time) {
 	u32 greed, tolerance, penalty, scaled_penalty;
-	
+
 	greed = log2plus1_u64_u32f8(burst_time);
 	tolerance = sched_burst_penalty_offset << 8;
-	penalty = max(0, (s32)(greed - tolerance));
-	scaled_penalty = penalty * sched_burst_penalty_scale >> 16;
+	penalty = (greed > tolerance) ? (greed - tolerance) : 0;
+	scaled_penalty = (u32)(((u64)penalty * sched_burst_penalty_scale) >> 16);
 
 	return min(MAX_BURST_PENALTY, scaled_penalty);
 }
@@ -617,10 +625,10 @@ static void update_burst_penalty(struct sched_entity *se) {
 }
 
 static inline u32 binary_smooth(u32 new, u32 old) {
-	int increment = new - old;
-		return (0 <= increment)?
-	old + ( increment >> (int)sched_burst_smoothness_long):
-	old - (-increment >> (int)sched_burst_smoothness_short);
+	int increment = (int)new - (int)old;
+	if (increment >= 0)
+		return old + (increment >> (int)sched_burst_smoothness_long);
+	return old - (-increment >> (int)sched_burst_smoothness_short);
 }
 
 static void restart_burst(struct sched_entity *se) {
